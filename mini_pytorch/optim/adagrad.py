@@ -35,3 +35,4 @@ class Adagrad(Optimizer):
                 clr = lr / (1.0 + (step - 1.0) * lr_decay)
                 state["sum"] += grad * grad
                 p.data -= clr * grad / (np.sqrt(state["sum"]) + eps)
+                p._mark_dirty()
