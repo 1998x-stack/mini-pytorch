@@ -1,206 +1,246 @@
-# Agents.md — mini-pytorch v0.5 Development Contract
+# Agents.md — mini-pytorch Development Contract
 
-> Read this file before modifying the `v0.5` branch.
+> **Mandatory for every future iteration:** read this file before changing code, tests, documentation, branches, version scope, or architecture.
+>
+> This is the canonical engineering contract for `main`. Version branches carry their own branch-specific `Agents.md`.
 
-## Branch identity
+## 1. Repository mission
 
-- Branch: `v0.5`
-- Previous version: `v0.4`
-- Primary mental model: **operator schema + registry + DispatchKey + Dispatcher + redispatch + Autograd routing**
-- Status: active until Definition of Done is satisfied, then freeze this branch.
+mini-pytorch is an educational, NumPy-first framework for understanding the mechanisms behind real PyTorch.
 
-## 1. Scope rule
-
-v0.5 should teach one architectural idea:
+Priorities:
 
 ```text
-Tensor API
-   ↓
-logical operator
-   ↓
-Dispatcher
-   ↓
-DispatchKeySet
-   ↓
-implementation
-```
-
-Do not turn v0.5 into a general feature release.
-
-Allowed core work:
-
-- operator schema
-- operator/kernel registry
-- DispatchKey and DispatchKeySet
-- Dispatcher
-- dispatch priority
-- redispatch
-- fallback
-- CPU reference kernels for selected operators
-- Autograd wrapper routing
-- NoGrad routing
-- selected Tensor integration: add, mul, matmul, relu, sum
-- dispatcher tests/docs/example
-
-## 2. Explicit non-goals
-
-Do not add in this branch:
-
-- real CUDA backend
-- device allocation / `.to()`
-- Conv2d / pooling / BatchNorm
-- multiprocessing DataLoader
-- DDP
-- advanced autograd graph lifetime
-- compiler graph capture
-- Tensor subclass dispatch
-- production-scale PyTorch DispatchKey taxonomy
-
-`CUDA` may exist only as a reserved educational key.
-
-## 3. Preserve v0.4 invariants
-
-The following must remain correct:
-
-- explicit Storage
-- shape / stride / storage_offset
-- view aliasing
-- contiguous semantics
-- version counter
-- inplace saved-tensor safety
-- scalar Tensor shape `()`
-- existing Autograd numerical behavior
-- optimizer and DataLoader behavior
-
-Dispatcher work must not silently weaken the memory model.
-
-## 4. Dependency direction
-
-Preferred structure:
-
-```text
-Tensor
-  ↓
-Dispatcher
-  ↓
-operator registry
-  ↓
-CPU kernels
-
-Dispatcher
-  ↓
-Autograd wrapper
-  ↓ redispatch
-CPU kernels
-```
-
-Avoid importing `nn`, `optim` or `data` into Dispatcher/core operator files.
-
-Avoid a Tensor ↔ Dispatcher eager import cycle; Tensor operator methods should use local imports when necessary.
-
-## 5. Backend vs Autograd rule
-
-CPU kernels must own only numerical behavior.
-
-Bad:
-
-```text
-CPU add kernel
-├── NumPy add
-└── builds GradFn
-```
-
-Desired:
-
-```text
-Autograd dispatch wrapper
-   ↓
-prepare Context
-   ↓
-redispatch
-   ↓
-CPU numerical kernel
-   ↓
-attach GradFn
-```
-
-The educational point is that backend kernels should not need to know dynamic-graph policy.
-
-## 6. Redispatch rule
-
-A wrapper selected at one DispatchKey must be able to invoke the same logical operator with that key removed.
-
-```text
-Autograd + CPU
-      ↓ choose Autograd
-Autograd wrapper
-      ↓ remove Autograd
-CPU
+architectural clarity
       ↓
-CPU kernel
+correctness + explicit invariants
+      ↓
+readable reference implementation
+      ↓
+tests that demonstrate mechanisms
+      ↓
+conceptual mapping to PyTorch
+      ↓
+performance only after the model is clear
 ```
 
-Do not implement redispatch by calling the public Tensor operator again; that would recurse into the same high-priority key.
+The project does not optimize for API completeness or for copying upstream PyTorch source code.
 
-## 7. Registration rules
+## 2. Mandatory reading order
 
-Tests must cover:
+### On `main`
 
-- duplicate schema error
-- kernel registration for an undefined operator error
-- duplicate `(operator, DispatchKey)` kernel error
-- unknown operator error
-- missing kernel/fallback error
-- introspection of registered schema/kernels
+Read:
 
-## 8. Testing requirements
+1. `Agents.md`
+2. `Plan.md`
+3. `version.md`
+4. architecture docs relevant to the subsystem
+5. tests for that subsystem
+6. current implementation
 
-Run the full suite:
+### On a version branch
+
+Read:
+
+1. branch `Agents.md`
+2. branch `version.md`
+3. relevant docs/tests/source
+
+Never assume a historical branch should contain a later-version feature.
+
+## 3. Branch invariant
+
+`main` must always be the newest integrated, validated state.
+
+Correct lifecycle:
+
+```text
+latest main
+   ↓
+create vX.Y
+   ↓
+implement one major mental model
+   ↓
+full tests + docs + example
+   ↓
+exact branch-head CI green
+   ↓
+freeze version branch
+   ↓
+integrate validated tree to main
+   ↓
+restore canonical main docs
+```
+
+Forbidden:
+
+```text
+active/frozen version contains newer validated framework code
+main remains stale
+```
+
+## 4. One version = one major mental model
+
+Current learning sequence:
+
+```text
+v0.1  Tensor / Dynamic Autograd
+v0.2  Optimizer state / LR Scheduler
+v0.3  Dataset / Sampler / DataLoader / MNIST
+v0.4  Storage / stride / views / inplace version safety
+v0.5  Operator Registry / Dispatcher / Redispatch
+v0.6  Neural-network operator stack / CNN        ← next
+```
+
+Features that do not serve the current version's mental model should be deferred to `Plan.md`.
+
+## 5. Architecture rules
+
+Preferred dependency direction:
+
+```text
+Tensor / Storage
+      │
+      ▼
+Operator Schema / Dispatcher
+      │
+ ┌────┴───────────┐
+ ▼                ▼
+Backend kernels  Autograd wrappers
+      │                │
+      └──────┬─────────┘
+             ▼
+            nn
+             │
+             ▼
+           optim
+
+Dataset / Sampler / DataLoader
+             │
+             └──────────► training runtime
+```
+
+Rules:
+
+- separate policy from mechanism;
+- avoid circular core imports;
+- CPU/backend kernels should not know Module/Optimizer/DataLoader;
+- Autograd policy should not be duplicated inside every backend kernel;
+- preserve Storage/stride/view invariants while extending operators;
+- do not scatter device-specific `if` statements through Tensor before the device/backend version.
+
+## 6. Conceptual PyTorch compatibility
+
+Prefer PyTorch-like boundaries when they improve transfer of understanding:
+
+- TensorImpl-like Storage + sizes + strides + storage offset;
+- dynamic Autograd Functions/Nodes;
+- Module parameters and buffers;
+- Optimizer parameter groups/state;
+- Dataset/Sampler/DataLoader separation;
+- operator schema + Dispatcher + DispatchKey;
+- redispatch from wrappers to backend kernels;
+- later: Conv2d, device/backend, DDP and compiler stack.
+
+Implement original educational equivalents. Do not copy upstream source.
+
+## 7. Testing contract
+
+Every new subsystem should include, as applicable:
+
+- happy path;
+- invariant/property tests;
+- error-path tests;
+- numerical/reference validation;
+- integration test.
+
+Full regression command:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-v0.5-specific tests must include:
+Never claim a version is validated unless the exact code being reported has actually passed the relevant test suite. Before freeze, GitHub Actions must pass on the exact final version-branch head.
 
-- schema/registry unit tests
-- dispatch priority
-- CPU routing
-- NoGrad fallback and redispatch
-- Autograd-before-CPU routing
-- gradient correctness through dispatched operators
-- selected Tensor API integration
-- readable error paths
+## 8. Documentation contract
 
-Do not claim v0.5 complete until GitHub Actions passes on the exact final branch head.
+When architecture or public API changes, review at minimum:
 
-## 9. Documentation requirements
+```text
+version.md
+README.md
+Agents.md
+relevant docs/*
+relevant example
+Plan.md on main when version sequencing changes
+```
 
-Before freeze, update:
+Every version README must state:
 
-- `version.md`
-- `README.md`
-- `docs/DISPATCHER.md`
-- `examples/08_dispatcher.py`
+- version theme;
+- delta from previous version;
+- important source files;
+- recommended reading order;
+- quick run commands;
+- explicit non-goals;
+- next version.
 
-The documentation must explicitly answer:
+## 9. Historical branch rule
 
-1. schema vs kernel — what is the difference?
-2. DispatchKey — what does it represent?
-3. dispatch priority — why does Autograd beat CPU?
-4. redispatch — why is it needed?
-5. NoGrad — why can routing change while CPU math stays identical?
-6. why Dispatcher comes before real device/backend support.
+A frozen version branch may receive only:
 
-## 10. Freeze / integration
+- documentation corrections;
+- tests that correct the version's own promised behavior;
+- narrowly scoped bug fixes within that version's scope.
 
-When complete:
+Do not backport future subsystems merely for convenience.
 
-1. full CI green on exact `v0.5` head;
-2. mark `version.md` frozen;
-3. freeze branch as historical snapshot;
-4. synchronize validated implementation into `main`;
-5. restore `main` canonical `Agents.md` and advance `Plan.md` to v0.6;
-6. verify `main` is not behind `v0.5`.
+## 10. Performance rule
 
-After freeze, only documentation corrections or narrowly scoped v0.5 bug fixes are allowed.
+Prefer:
+
+```text
+readable reference
+   ↓
+correctness
+   ↓
+profile
+   ↓
+optimized educational path
+```
+
+Examples:
+
+- readable Conv2d loops before im2col optimization;
+- eager kernels before fusion;
+- simple synchronization before DDP buckets.
+
+## 11. Generated artifacts and dependencies
+
+Do not commit generated datasets, logs, plots or checkpoints unless a tiny deterministic fixture is explicitly required by tests.
+
+NumPy remains the default reference backend until the device/backend version explicitly introduces another backend.
+
+## 12. Definition of Done for a version
+
+A version can be frozen only when:
+
+- primary mental model is explicit;
+- promised implementation is complete;
+- unit/invariant/error tests pass;
+- numerical/reference checks exist where relevant;
+- educational integration example exists;
+- `version.md` accurately records the delta;
+- version-specific `Agents.md` exists;
+- architecture docs are updated;
+- package imports cleanly;
+- exact final branch-head CI is green;
+- validated state is integrated into `main`;
+- next version dependency rationale is recorded in `Plan.md`.
+
+## 13. Current main directive
+
+`main` currently contains the completed v0.5 Dispatcher milestone.
+
+The next branch must be created from current `main` and follow `Plan.md`. The next planned architectural milestone is **v0.6: neural-network operator stack / CNN**, using the Dispatcher introduced in v0.5 rather than bypassing it.
