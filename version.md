@@ -1,312 +1,237 @@
-# mini-pytorch v0.8
+# mini-pytorch v0.9
 
 ## 1. Version identity
 
-- **Branch:** `v0.8`
-- **Previous version:** `v0.7`
-- **Theme:** Advanced Autograd Engine
-- **Status:** **frozen historical learning snapshot**
-- **Package version:** `0.8.0`
-- **Validated regression baseline:** **123/123 tests passed**
+- **Branch:** `v0.9`
+- **Previous version:** `v0.8`
+- **Theme:** Training Runtime / Serialization / Reproducibility
+- **Status:** active development
+- **Target package version:** `0.9.0`
+- **Starting regression baseline:** `123/123 tests passed`
 
-v0.8 answers:
+v0.9 answers:
 
-> How does an Autograd engine manage graph lifetime, repeated backward execution, retained gradients and hooks instead of merely traversing a permanent DAG?
+> What exact state must be captured, validated and restored so a stopped training run can continue with the same future behavior?
 
-## 2. Core difference from v0.7
+## 2. Core difference from v0.8
 
-v0.7 completed placement:
-
-```text
-Tensor / Storage / Device
-          ↓
-       Dispatcher
-      CPU / EDU
-```
-
-v0.8 makes backward execution an explicit subsystem:
+v0.8 made backward execution explicit:
 
 ```text
-forward graph
-     ↓
-GradFn / Context
-     ↓
-AutogradEngine
- ┌────┼───────────────┐
- ▼    ▼               ▼
-VJP  graph lifetime  hooks
- │    retain_graph    │
- ▼                    ▼
-leaf grad       retained non-leaf grad
+forward graph → AutogradEngine → optimizer step
 ```
 
-Placement remains orthogonal: the Engine contains no CPU-vs-EDU execution branch.
-
-## 3. Implemented mechanisms
-
-### Explicit Engine
-
-Added `mini_pytorch/autograd_engine.py`.
-
-The Engine owns:
-
-- topological traversal;
-- transient local gradient accumulation;
-- graph-availability preflight;
-- Tensor hook execution;
-- leaf/non-leaf persistent grad materialization;
-- backward VJP invocation;
-- parent-gradient shape validation;
-- graph release policy.
-
-`Tensor.backward()` is now a thin public entry point.
-
-### Context lifecycle
-
-`Context` now tracks `is_released` and exposes:
+v0.9 makes the training process itself explicit state:
 
 ```text
-ensure_available()
-release()
+Module state
+Optimizer state
+Scheduler state
+RNG state
+Training progress
+      ↓
+CheckpointState
+      ↓
+validated serialization
+      ↓
+restore into fresh objects
+      ↓
+deterministic continuation
 ```
 
-Default successful backward releases:
+The milestone is not `pickle.dump(model)`. It is an inspectable training-state contract.
 
-- saved tensors;
-- saved-version references;
-- bound forward Tensor references;
-- bound raw input references.
+## 3. Planned mechanisms
 
-A second backward through released state fails before hook or `.grad` side effects.
+### 3.1 Framework RNG
 
-### `retain_graph`
-
-Implemented:
+Add a small NumPy-first RNG layer:
 
 ```python
-loss.backward(retain_graph=True)
-loss.backward()
+manual_seed(42)
+get_rng_state()
+set_rng_state(state)
 ```
 
-The retained execution preserves Context state; the final non-retained execution releases the graph.
+A seed initializes a stream; a checkpoint restores the **current RNG stream state**.
 
-Persistent `.grad` values continue to accumulate independently of graph retention.
+Framework-owned parameter initialization and unseeded stochastic operations should use this stream where practical.
 
-### Non-leaf `retain_grad()`
+### 3.2 TrainingState
 
-Implemented:
-
-```python
-intermediate.retain_grad()
-```
-
-Leaves still retain `.grad` automatically. Non-leaves remain transient by default and only persist grad after `retain_grad()`.
-
-### Gradient hooks
-
-Implemented:
-
-```python
-handle = tensor.register_hook(fn)
-handle.remove()
-```
-
-Semantics:
-
-- registration-order execution;
-- defensive gradient copy passed to hooks;
-- `None` means observe-only;
-- ndarray/Tensor replacement may transform flow;
-- replacement shape validation;
-- Tensor replacement device validation;
-- idempotent removable handles;
-- transformed gradient is both accumulated and propagated upstream.
-
-### Shared-node execution
-
-Engine topology uses identity-based visited tracking. Contributions from multiple downstream consumers accumulate in `local_grads` before the shared node backward runs once.
-
-### Custom Function teaching API
-
-`Function`, `Context`, `GradFn`, `AutogradEngine` and `RemovableHandle` are public imports.
-
-Custom Functions use the same:
+Introduce explicit runtime progress:
 
 ```text
-Function.apply → Context/GradFn → AutogradEngine
+epoch
+global_step
+batch_in_epoch
+best_metric
+optional metadata
 ```
 
-path as built-in educational Functions.
+v0.9 will guarantee deterministic resume at an explicitly documented boundary rather than pretend every arbitrary DataLoader iterator is resumable.
 
-Tests prove custom Function:
+### 3.3 CheckpointState schema
 
-- forward/backward correctness;
-- Context release;
-- saved-version safety;
-- EDU device preservation.
-
-### Higher-order boundary
-
-`Tensor.backward(..., create_graph=True)` is explicit but raises `NotImplementedError`.
-
-Reason: current backward formulas produce NumPy arrays rather than Tensor-valued backward operations, so a differentiable backward graph does not exist yet.
-
-No false second-derivative claim is made.
-
-## 4. New files
+Logical state:
 
 ```text
-mini_pytorch/autograd_engine.py
-tests/test_autograd_engine.py
-docs/AUTOGRAD_ENGINE.md
-examples/11_autograd_engine.py
+CheckpointState
+├── schema_version
+├── framework_version
+├── model_state
+├── optimizer_state
+├── scheduler_state
+├── rng_state
+├── training_state
+└── metadata
 ```
 
-Major modified files:
+No live Parameter/Module objects belong in the serialized payload.
+
+### 3.4 Inspectable serialization
+
+Use a transparent checkpoint directory:
 
 ```text
-mini_pytorch/autograd.py
-mini_pytorch/tensor.py
-mini_pytorch/__init__.py
-pyproject.toml
-README.md
-Agents.md
-version.md
+checkpoint/
+├── metadata.json
+└── tensors.npz
 ```
 
-## 5. Preserved invariants
+NumPy arrays live in NPZ. JSON stores structure, array references, schema/framework versions and runtime metadata. `pickle` is not the primary format.
 
-v0.8 preserves:
+### 3.5 Restore orchestration
 
-- Storage/stride/view semantics;
-- shared version counter;
-- inplace saved-version checks;
-- Dispatcher Autograd wrappers;
-- CPU/EDU placement;
-- differentiable device transfer;
-- leaf gradient accumulation across independent graphs;
-- optimizers/schedulers;
-- DataLoader/MNIST;
-- CNN operator stack.
+Loading bytes and restoring training are separate steps.
 
-## 6. Validation
-
-Validated release-candidate commit:
+Restore order:
 
 ```text
-f1e3f415764aa537edfe08cf7a7d0b028461ce66
+validate schema
+   ↓
+model
+   ↓
+optimizer
+   ↓
+scheduler
+   ↓
+training progress
+   ↓
+RNG last
 ```
 
-GitHub Actions environment:
+Restoring RNG last prevents construction of fresh model/optimizer objects from disturbing future random choices.
+
+Serialized arrays are device-neutral host values. Loading into a model already placed on CPU/EDU preserves that target placement.
+
+### 3.6 Deterministic resume experiment
+
+Central integration proof:
 
 ```text
-Ubuntu 24.04
-Python 3.11.17
-NumPy 2.4.6
+Run A: seed S → train 1..N
+Run B: seed S → train 1..K → save → fresh objects → restore → train K+1..N
 ```
 
-Result:
+Compare:
+
+- loss continuation;
+- model parameters;
+- optimizer moments/state;
+- scheduler LR/state;
+- TrainingState counters;
+- future framework RNG draws.
+
+## 4. Planned source layout
 
 ```text
-Ran 123 tests in 0.782s
-OK
+mini_pytorch/runtime/
+├── __init__.py
+├── rng.py
+├── state.py
+└── checkpoint.py
+
+tests/test_runtime_checkpoint.py
+docs/TRAINING_RUNTIME.md
+examples/12_checkpoint_resume.py
 ```
 
-This is the previous v0.7 baseline of 103 tests plus 20 dedicated v0.8 tests.
+Existing Module/Optimizer/Scheduler state APIs should be reused and only strengthened where restore validation needs a missing primitive.
 
-## 7. v0.8-specific test coverage
+## 5. Compatibility invariants
 
-- default graph release;
-- repeated backward error;
-- retain_graph reuse and final release;
-- shared-node accumulation/release;
-- CPU/EDU lifetime parity;
-- create_graph explicit refusal without graph consumption;
-- default non-leaf `.grad` absence;
-- retain_grad materialization;
-- retained-grad accumulation;
-- retain_grad on EDU;
-- hook observe/transform;
-- hook ordering;
-- transformed hook + retained grad;
-- removable handle idempotence;
-- invalid hook shape;
-- hook Tensor device mismatch;
-- custom Function forward/backward;
-- custom Function version safety;
-- custom Function EDU placement;
-- Tensor gradient-seed device mismatch.
+v0.9 must preserve:
+
+- v0.4 Storage/view/version safety;
+- v0.5 Dispatcher behavior;
+- v0.7 CPU/EDU placement;
+- v0.8 Autograd graph lifecycle/hooks;
+- leaf gradient semantics;
+- existing Optimizer/Scheduler APIs;
+- Dataset/DataLoader/CNN regressions.
+
+Persistence logic must stay out of Tensor numerical kernels and AutogradEngine traversal.
+
+## 6. Required tests
+
+At minimum:
+
+- same framework seed → same random sequence;
+- RNG save/restore → identical continuation;
+- TrainingState validation/round-trip;
+- checkpoint model/optimizer/scheduler round-trip;
+- target device preserved on restore;
+- metadata JSON + tensor NPZ round-trip;
+- unknown schema rejected;
+- missing required section rejected;
+- wrong model shape rejected;
+- optimizer parameter-group mismatch rejected;
+- missing scheduler state rejected when scheduler restore is requested;
+- deterministic uninterrupted vs resumed training equivalence;
+- future RNG draws identical after resume;
+- complete historical suite remains green.
+
+## 7. Explicit non-goals
+
+Do not add in v0.9:
+
+- distributed/sharded checkpoints;
+- remote object-store persistence;
+- async checkpoint writers;
+- exact arbitrary mid-epoch DataLoader worker restoration;
+- DDP/NCCL;
+- compiler graph serialization;
+- cryptographic signing/encryption.
 
 ## 8. Definition of Done
 
-- [x] explicit Engine owns backward traversal
-- [x] Context lifecycle/release implemented
-- [x] `retain_graph` implemented
-- [x] non-leaf `retain_grad()` implemented
-- [x] hooks + removable handles implemented
-- [x] custom Function teaching path documented/tested
-- [x] higher-order limitation explicit
-- [x] CPU and EDU semantics match
-- [x] all previous regression tests pass
-- [x] README/docs/example updated
-- [x] package version is `0.8.0`
-- [x] release candidate CI is green
-- [x] branch marked frozen pending exact frozen-head CI/integration
+Before freezing v0.9:
 
-## 9. Recommended reading order
+- [ ] framework RNG state capture/restore implemented
+- [ ] TrainingState implemented
+- [ ] schema-versioned CheckpointState implemented
+- [ ] inspectable JSON + NPZ serialization implemented
+- [ ] model/optimizer/scheduler/RNG/progress restore implemented
+- [ ] strict compatibility failures tested
+- [ ] device restoration rule tested
+- [ ] deterministic resume experiment passes
+- [ ] README/docs/example updated
+- [ ] package version is `0.9.0`
+- [ ] all previous regression tests pass
+- [ ] exact final v0.9 branch-head CI is green
+- [ ] frozen validated tree is integrated into `main`
 
-```text
-mini_pytorch/autograd.py
-        ↓
-mini_pytorch/autograd_engine.py
-        ↓
-mini_pytorch/tensor.py
-        ↓
-tests/test_autograd_engine.py
-        ↓
-docs/AUTOGRAD_ENGINE.md
-        ↓
-examples/11_autograd_engine.py
-```
+## 9. Next version
 
-## 10. Explicit non-goals
-
-v0.8 intentionally does not implement:
-
-- true higher-order gradients;
-- full `create_graph=True`;
-- forward-mode AD;
-- parallel Autograd workers;
-- anomaly detection;
-- stream-aware CUDA scheduling;
-- DDP gradient buckets;
-- compiler graph capture.
-
-## 11. Learning goals
-
-After v0.8 the reader should be able to explain:
-
-1. graph structure vs backward saved state vs Engine-transient gradients;
-2. why default backward releases state;
-3. why `retain_graph`, `retain_grad` and `zero_grad` are different mechanisms;
-4. why shared graph nodes need local gradient accumulation;
-5. where hooks sit in gradient flow;
-6. why non-leaf `.grad` is absent by default;
-7. how custom Function uses the same Engine path;
-8. why NumPy-valued backward formulas prevent real higher-order Autograd.
-
-## 12. Next version
-
-`v0.9` should focus on **Training Runtime / Serialization / Reproducibility**:
+After v0.9, `v0.10` should focus on **Distributed / DDP Concepts**:
 
 ```text
-model state
-optimizer state
-scheduler state
-RNG state
-epoch/global-step state
-      ↓
-unified checkpoint
-      ↓
-deterministic resume
+Autograd gradient-ready hook
+        ↓
+DDP reducer / buckets
+        ↓
+ProcessGroup.all_reduce
+        ↓
+replica-consistent gradients
 ```
