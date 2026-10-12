@@ -1,265 +1,222 @@
-# mini-pytorch v0.4
+# mini-pytorch v0.5
 
 ## 1. Version identity
 
-- **Branch:** `v0.4`
-- **Previous version:** `v0.3`
-- **Theme:** TensorImpl-like memory model — Storage, stride, views, contiguous layout, inplace safety
-- **Status:** **frozen historical learning snapshot**
-- **Package version:** `0.4.0`
+- **Branch:** `v0.5`
+- **Previous version:** `v0.4`
+- **Theme:** operator schema + registry + DispatchKey + Dispatcher + redispatch + Autograd routing
+- **Status:** active development
+- **Target package version:** `0.5.0`
 
-v0.4 changes the meaning of a Tensor more deeply than any previous release. In v0.1-v0.3, a Tensor was effectively a NumPy array plus autograd metadata. In v0.4, Tensor identity is decomposed into an allocation plus view metadata.
-
-```text
-Storage
-  └── flat contiguous allocation
-          ▲
-          │ shared by aliases
-   ┌──────┴────────┐
-   │               │
-Tensor A        Tensor B
-shape           shape
-stride          stride
-storage_offset  storage_offset
-```
-
-The primary question answered by this version is:
-
-> How can two tensors have different shapes/layouts while referring to the same underlying memory, and why does that matter for Autograd?
-
----
-
-## 2. Core difference from v0.3
-
-### v0.3 mental model
+v0.5 introduces the routing layer between Tensor API and concrete operator implementations.
 
 ```text
-Tensor ≈ ndarray + requires_grad + grad_fn
+Tensor API
+   ↓
+Operator Schema
+   ↓
+Dispatcher
+   ↓
+DispatchKeySet
+  ┌───────┬─────────┐
+  ▼       ▼         ▼
+Autograd NoGrad    CPU
+  │                 │
+  └──── redispatch ─┘
 ```
 
-### v0.4 mental model
+The primary question is:
+
+> Why should `x + y` resolve an operator through a dispatcher instead of hard-coding every backend/autograd behavior inside `Tensor.__add__`?
+
+## 2. Difference from v0.4
+
+v0.4 established Tensor memory identity:
+
+```text
+Storage + shape + stride + offset + version
+```
+
+v0.5 keeps those semantics stable and adds an execution-routing identity:
+
+```text
+logical operator
+      ↓
+schema / registry
+      ↓
+dispatch keys
+      ↓
+selected implementation
+```
+
+This is the prerequisite for future device/backend work because Tensor methods no longer need large `if device == ...` branches.
+
+## 3. Required mechanisms
+
+### Operator schema
+
+- namespace
+- operator name
+- overload name
+- signature metadata
+- canonical qualified name
+- duplicate-definition errors
+
+### Registry
+
+- schema registration
+- per-operator per-key kernel registration
+- duplicate-kernel errors
+- lookup/introspection API
+
+### Dispatch keys
+
+Educational keys:
+
+- `Autograd`
+- `NoGrad`
+- `CPU`
+- reserved `CUDA`
+
+### Dispatcher
+
+- key-set inference from Tensor arguments and grad mode
+- dispatch priority
+- operator lookup
+- kernel selection
+- redispatch
+- fallback behavior
+- readable dispatch explanation/introspection
+
+### Tensor integration
+
+The first dispatched Tensor operators are:
+
+- add
+- mul
+- matmul
+- relu
+- sum
+
+Other operators remain on the previous direct `Function.apply()` path so the version delta stays easy to inspect.
+
+### Autograd routing
+
+For dispatched differentiable operators:
+
+```text
+Tensor op
+  ↓
+Autograd key selected
+  ↓
+Autograd wrapper prepares backward Context
+  ↓
+redispatch without Autograd
+  ↓
+CPU kernel
+  ↓
+attach GradFn to result
+```
+
+The CPU backend therefore does not need to own dynamic-graph logic.
+
+## 4. Architecture boundaries
 
 ```text
 Tensor
-├── Storage reference
-├── shape
-├── stride
-├── storage_offset
-├── dtype
-├── requires_grad
-└── grad_fn
+  │ calls logical op
+  ▼
+Dispatcher
+  │
+  ├── Autograd wrapper
+  │      │
+  │      └── redispatch
+  │              ↓
+  ├── NoGrad fallback
+  │      │
+  │      └── redispatch
+  │              ↓
+  └── CPU kernel
 ```
 
-A transpose, slice or compatible view can create a new Tensor object without allocating new Storage.
-
----
-
-## 3. Mechanisms added
-
-### Storage
-
-- explicit `Storage`
-- flat contiguous allocation
-- dtype / size / nbytes metadata
-- shared `VersionCounter`
-- contiguous stride calculation
-
-### Tensor layout metadata
-
-- explicit shape
-- explicit element strides
-- explicit `storage_offset`
-- `stride()`
-- `is_contiguous()`
-- correct zero-dimensional scalar layout
-
-### Views
-
-- `transpose(dim0, dim1)`
-- `permute(*dims)`
-- basic slicing views
-- negative-stride slices when representable
-- Storage alias preservation
-- backward through view operations
-
-### `view` / `reshape` / `contiguous`
-
-- `view()` aliases Storage or fails; it never silently copies
-- `reshape()` aliases when possible and copies when required
-- `contiguous()` returns self for an already-contiguous Tensor and materializes otherwise
-
-### Inplace / Autograd safety
-
-- tracked `add_`, `mul_`, `copy_`
-- leaf `requires_grad=True` inplace restriction while grad is enabled
-- shared Storage version counter across aliases
-- optimizer updates bump parameter versions
-- `load_state_dict()` bumps destination versions
-- `Context.save_for_backward()` records versions of saved input values
-- backward validates saved versions and rejects invalidated values
-
----
-
-## 4. Observable invariants
+Dependency direction:
 
 ```text
-contiguous tensor -> canonical element strides
-transpose         -> same Storage, different stride
-permute           -> same Storage, reordered stride
-slice             -> same Storage, changed storage_offset/stride
-negative slice    -> negative stride
-view              -> must alias or fail
-reshape           -> alias when possible, copy when required
-contiguous        -> allocate only when required
-inplace alias     -> all aliases see mutation + shared version bump
-optimizer update  -> parameter version bump
-state loading     -> destination version bump
-saved mutation    -> backward RuntimeError
+Tensor → Dispatcher → registered kernels
+                  ↘ Autograd wrappers
 ```
 
----
+Core backend kernels should not depend on Module/Optimizer/DataLoader.
 
-## 5. What remains unchanged from v0.3
+## 5. Acceptance criteria
 
-The higher-level training stack is intentionally preserved:
+v0.5 is complete when tests demonstrate:
 
-- eager dynamic Autograd graph
-- Module / Parameter registration
-- Linear / activations / losses
-- optimizer families
-- LR schedulers
-- Dataset / Sampler / BatchSampler / DataLoader
-- MNIST classification path
+- [ ] operator schemas can be defined and inspected
+- [ ] duplicate schema registration fails clearly
+- [ ] kernels can be registered by DispatchKey
+- [ ] duplicate kernel registration fails clearly
+- [ ] ordinary non-grad Tensor calls route to CPU
+- [ ] grad-enabled calls route to Autograd before CPU
+- [ ] `no_grad()` selects NoGrad behavior and creates no graph
+- [ ] Autograd wrapper redispatches to CPU
+- [ ] missing operator/kernel errors are readable
+- [ ] selected Tensor APIs use Dispatcher
+- [ ] numerical and gradient behavior remains compatible with v0.4
+- [ ] full regression suite passes
+- [ ] educational dispatcher example runs
+- [ ] `docs/DISPATCHER.md` explains the mechanism
 
-v0.4 changes Tensor memory semantics underneath those layers rather than redesigning them.
+## 6. Explicit non-goals
 
----
+v0.5 does not implement:
 
-## 6. Important files
+- actual CUDA kernels
+- device allocation or `.to(device)`
+- production PyTorch DispatchKey complexity
+- Tensor subclass dispatch
+- functionalization
+- composite implicit/explicit autograd key families
+- Conv2d
+- DDP
+- compiler graph capture
 
-Recommended reading order:
+The `CUDA` key is reserved to make the future backend boundary visible, not to pretend GPU support already exists.
+
+## 7. Recommended reading order
+
+Once implemented:
 
 ```text
-mini_pytorch/storage.py
+mini_pytorch/dispatcher.py
+        ↓
+mini_pytorch/kernels.py
+        ↓
+mini_pytorch/operator_registry.py
         ↓
 mini_pytorch/tensor.py
         ↓
-mini_pytorch/autograd.py
-        ↓
 mini_pytorch/ops.py
         ↓
-tests/test_storage.py
+tests/test_dispatcher.py
         ↓
-docs/TENSOR_MEMORY.md
+docs/DISPATCHER.md
         ↓
-examples/07_tensor_memory.py
+examples/08_dispatcher.py
 ```
 
----
+## 8. Learning goals
 
-## 7. Learning goals
+By the end of v0.5, a reader should be able to explain:
 
-After v0.4, the reader should be able to explain:
+1. operator schema and kernel implementation are different concepts;
+2. why one operator can have multiple implementations;
+3. what a DispatchKey represents;
+4. why Autograd can be a routing layer above a backend kernel;
+5. what redispatch means and why it prevents recursive dispatch;
+6. why `no_grad()` can affect routing without changing the CPU math kernel;
+7. why a Dispatcher should exist before adding real device backends.
 
-1. why Tensor is not synonymous with its allocation;
-2. what strides mean in element units;
-3. how `storage_offset` represents a slice into shared Storage;
-4. why transpose/permute can be metadata-only operations;
-5. why non-contiguous tensors are still valid tensors;
-6. why `view()` may fail while `reshape()` succeeds;
-7. what `contiguous()` materializes;
-8. why aliases need a shared mutation version counter;
-9. why Autograd validates saved values before backward;
-10. why optimizer/state-loading writes participate in the same mutation model.
+## 9. Next version direction
 
----
-
-## 8. Validation record
-
-### Exact remote validation
-
-The exact v0.4 code was validated by GitHub Actions on:
-
-```text
-Ubuntu 24.04
-Python 3.11.17
-NumPy 2.4.6
-```
-
-Validated implementation commit:
-
-```text
-e12c947a1d6e6f44779e7f2bb8ff9b776a80f808
-```
-
-Result:
-
-```text
-Ran 65 tests in 0.510s
-OK
-```
-
-The subsequent `version.md`-only release-candidate commit was also revalidated successfully before integration.
-
-### Validation bug found and fixed
-
-Initial CI exposed that `np.ascontiguousarray()` promotes a 0-D ndarray to shape `(1,)`. That would have changed scalar Tensor semantics. v0.4 fixes this by materializing contiguous Storage while preserving the original scalar shape `()`.
-
----
-
-## 9. Definition of Done
-
-- [x] explicit `Storage`
-- [x] shape / stride / storage offset metadata
-- [x] transpose / permute / basic slicing aliases
-- [x] shared-storage invariant tests
-- [x] distinct `view()` / `reshape()` semantics
-- [x] `contiguous()` semantics
-- [x] backward through view operations
-- [x] shared version counter
-- [x] tracked inplace operations
-- [x] optimizer/state-loading version integration
-- [x] saved-tensor version mismatch detection
-- [x] zero-dimensional scalar compatibility
-- [x] architecture documentation
-- [x] educational example
-- [x] package version `0.4.0`
-- [x] exact remote CI: **65/65 tests pass**
-- [x] validated implementation synchronized into `main`
-
----
-
-## 10. Explicit non-goals
-
-v0.4 intentionally excludes:
-
-- operator registry / Dispatcher
-- device/backend dispatch
-- CUDA
-- advanced indexing parity
-- complete alias analysis
-- channels-last / arbitrary memory formats
-- sparse / quantized storage
-- production storage resizing
-- full PyTorch inplace API parity
-
-These belong to later architectural milestones.
-
----
-
-## 11. Next version: v0.5
-
-`v0.5` introduces an operator registry and Dispatcher-like routing layer.
-
-```text
-v0.4
-Storage + Tensor layout semantics
-        ↓
-v0.5
-operator schema / registry / dispatch key / kernel routing
-        ↓
-later versions
-CPU / accelerator / Autograd-specific implementations
-```
-
-The dependency order is deliberate: first define what a Tensor is, then define how operations on that Tensor are routed.
+After v0.5 is frozen, `v0.6` can use the Dispatcher for nontrivial neural-network operators such as Conv2d, pooling, Dropout and BatchNorm rather than adding more special cases directly to Tensor.
