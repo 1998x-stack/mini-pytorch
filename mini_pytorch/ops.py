@@ -1,9 +1,10 @@
-"""Differentiable tensor operations for mini-pytorch v0.4."""
+"""Differentiable tensor operations for mini-pytorch v0.5."""
 from __future__ import annotations
 
 import numpy as np
 
 from .autograd import Context, Function
+from . import kernels
 
 
 def unbroadcast(grad: np.ndarray, target_shape: tuple[int, ...]) -> np.ndarray:
@@ -18,9 +19,13 @@ def unbroadcast(grad: np.ndarray, target_shape: tuple[int, ...]) -> np.ndarray:
 
 class Add(Function):
     @staticmethod
-    def forward(ctx: Context, a, b):
+    def setup_context(ctx: Context, a, b):
         ctx.a_shape, ctx.b_shape = a.shape, b.shape
-        return a + b
+
+    @staticmethod
+    def forward(ctx: Context, a, b):
+        Add.setup_context(ctx, a, b)
+        return kernels.add(a, b)
 
     @staticmethod
     def backward(ctx: Context, grad_output):
@@ -40,10 +45,14 @@ class Sub(Function):
 
 class Mul(Function):
     @staticmethod
-    def forward(ctx: Context, a, b):
+    def setup_context(ctx: Context, a, b):
         ctx.save_for_backward(a, b)
         ctx.a_shape, ctx.b_shape = a.shape, b.shape
-        return a * b
+
+    @staticmethod
+    def forward(ctx: Context, a, b):
+        Mul.setup_context(ctx, a, b)
+        return kernels.mul(a, b)
 
     @staticmethod
     def backward(ctx: Context, grad_output):
@@ -95,13 +104,13 @@ class Pow(Function):
 
 class MatMul(Function):
     @staticmethod
-    def forward(ctx: Context, a, b):
-        if a.ndim != 2 or b.ndim != 2:
-            raise ValueError("mini_pytorch MatMul currently supports 2-D tensors only")
-        if a.shape[1] != b.shape[0]:
-            raise ValueError(f"matmul shape mismatch: {a.shape} @ {b.shape}")
+    def setup_context(ctx: Context, a, b):
         ctx.save_for_backward(a, b)
-        return a @ b
+
+    @staticmethod
+    def forward(ctx: Context, a, b):
+        MatMul.setup_context(ctx, a, b)
+        return kernels.matmul(a, b)
 
     @staticmethod
     def backward(ctx: Context, grad_output):
@@ -111,9 +120,13 @@ class MatMul(Function):
 
 class Sum(Function):
     @staticmethod
-    def forward(ctx: Context, a, *, axis=None, keepdims: bool = False):
+    def setup_context(ctx: Context, a, *, axis=None, keepdims: bool = False):
         ctx.input_shape, ctx.axis, ctx.keepdims = a.shape, axis, keepdims
-        return a.sum(axis=axis, keepdims=keepdims)
+
+    @staticmethod
+    def forward(ctx: Context, a, *, axis=None, keepdims: bool = False):
+        Sum.setup_context(ctx, a, axis=axis, keepdims=keepdims)
+        return kernels.sum(a, axis=axis, keepdims=keepdims)
 
     @staticmethod
     def backward(ctx: Context, grad_output):
@@ -238,10 +251,14 @@ class Contiguous(Function):
 
 class ReLU(Function):
     @staticmethod
-    def forward(ctx: Context, a):
+    def setup_context(ctx: Context, a):
         mask = a > 0
         ctx.save_for_backward(mask)
-        return np.maximum(a, 0)
+
+    @staticmethod
+    def forward(ctx: Context, a):
+        ReLU.setup_context(ctx, a)
+        return kernels.relu(a)
 
     @staticmethod
     def backward(ctx: Context, grad_output):
