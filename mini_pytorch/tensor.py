@@ -1,4 +1,4 @@
-"""Tensor object: Storage-backed layout metadata + autograd + operator syntax."""
+"""Tensor object: Storage-backed layout metadata + autograd + dispatched operators."""
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -47,8 +47,9 @@ def _normalize_shape(shape: tuple[int, ...], numel: int) -> tuple[int, ...]:
 class Tensor:
     """A tiny differentiable Tensor with explicit Storage/layout semantics.
 
-    v0.4 makes the PyTorch-like mental model visible:
-    Storage + shape + stride + storage_offset describe a Tensor view.
+    v0.5 preserves the v0.4 Storage model and routes selected logical
+    operators through the operator Dispatcher before a concrete implementation
+    is selected.
     """
 
     __array_priority__ = 1000
@@ -62,10 +63,6 @@ class Tensor:
         name: Optional[str] = None,
     ) -> None:
         array = _as_array(data, dtype=dtype)
-        # np.ascontiguousarray() promotes a 0-D ndarray to shape (1,), which
-        # would silently change scalar Tensor semantics. np.array(..., order="C")
-        # preserves the original dimensionality while still materializing a
-        # canonical contiguous allocation for Storage.
         contiguous = np.array(array, copy=True, order="C", subok=False)
         self._storage = Storage(contiguous, copy=True)
         self._shape = tuple(contiguous.shape)
@@ -144,7 +141,6 @@ class Tensor:
             strides=tuple(stride * itemsize for stride in self._strides),
         )
 
-    # ---------- memory/layout metadata ----------
     @property
     def storage(self) -> Storage:
         return self._storage
@@ -191,7 +187,6 @@ class Tensor:
             expected *= size
         return True
 
-    # ---------- autograd metadata ----------
     @property
     def grad_fn(self) -> Optional[str]:
         return None if self._grad_fn is None else self._grad_fn.name
@@ -278,7 +273,6 @@ class Tensor:
             raise ValueError("only one-element tensors can be converted to Python scalars")
         return self.data.item()
 
-    # ---------- tracked inplace operations ----------
     def _check_inplace_allowed(self) -> None:
         if self.requires_grad and self.is_leaf and is_grad_enabled():
             raise RuntimeError(
@@ -318,15 +312,14 @@ class Tensor:
         self._mark_dirty()
         return self
 
-    # ---------- type coercion ----------
     @staticmethod
     def _ensure_tensor(value: Any) -> "Tensor":
         return value if isinstance(value, Tensor) else Tensor(value)
 
     # ---------- arithmetic ----------
     def __add__(self, other):
-        from .ops import Add
-        return Add.apply(self, self._ensure_tensor(other))
+        from .dispatcher import call
+        return call("aten::add.Tensor", self, self._ensure_tensor(other))
 
     def __radd__(self, other):
         return self + other
@@ -339,8 +332,8 @@ class Tensor:
         return self._ensure_tensor(other) - self
 
     def __mul__(self, other):
-        from .ops import Mul
-        return Mul.apply(self, self._ensure_tensor(other))
+        from .dispatcher import call
+        return call("aten::mul.Tensor", self, self._ensure_tensor(other))
 
     def __rmul__(self, other):
         return self * other
@@ -361,13 +354,13 @@ class Tensor:
         return Pow.apply(self, exponent=float(exponent))
 
     def __matmul__(self, other):
-        from .ops import MatMul
-        return MatMul.apply(self, self._ensure_tensor(other))
+        from .dispatcher import call
+        return call("aten::matmul.default", self, self._ensure_tensor(other))
 
     # ---------- reductions/layout ----------
     def sum(self, axis=None, keepdims: bool = False):
-        from .ops import Sum
-        return Sum.apply(self, axis=axis, keepdims=keepdims)
+        from .dispatcher import call
+        return call("aten::sum.default", self, axis=axis, keepdims=keepdims)
 
     def mean(self, axis=None, keepdims: bool = False):
         from .ops import Mean
@@ -413,8 +406,8 @@ class Tensor:
 
     # ---------- nonlinearities ----------
     def relu(self):
-        from .ops import ReLU
-        return ReLU.apply(self)
+        from .dispatcher import call
+        return call("aten::relu.default", self)
 
     def exp(self):
         from .ops import Exp
