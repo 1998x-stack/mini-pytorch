@@ -36,6 +36,7 @@ class Module:
             object.__setattr__(self, name, value)
             return
 
+        # Remove any previous registration under this name before reassigning.
         self._parameters.pop(name, None)
         self._modules.pop(name, None)
         self._buffers.pop(name, None)
