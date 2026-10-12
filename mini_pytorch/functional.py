@@ -46,18 +46,16 @@ def conv2d(
     *,
     implementation: str = "reference",
 ) -> Tensor:
-    """2-D cross-correlation routed through the operator Dispatcher.
-
-    v0.6 intentionally supports ``groups=1`` only.  ``implementation`` is an
-    educational switch between the readable loop kernel and im2col+matmul.
-    """
-
     if not isinstance(input, Tensor) or not isinstance(weight, Tensor):
         raise TypeError("conv2d input and weight must be Tensor objects")
     if weight.ndim != 4:
         raise ValueError("conv2d weight must have shape (out_channels, in_channels, kH, kW)")
     if bias is None:
-        bias = Tensor(np.zeros(weight.shape[0], dtype=weight.dtype), dtype=weight.dtype)
+        bias = Tensor(
+            np.zeros(weight.shape[0], dtype=weight.dtype),
+            dtype=weight.dtype,
+            device=weight.device,
+        )
     if not isinstance(bias, Tensor):
         raise TypeError("conv2d bias must be a Tensor or None")
 
@@ -74,14 +72,7 @@ def conv2d(
     )
 
 
-def max_pool2d(
-    input: Tensor,
-    kernel_size,
-    stride=None,
-    padding=0,
-) -> Tensor:
-    """2-D max pooling routed through the operator Dispatcher."""
-
+def max_pool2d(input: Tensor, kernel_size, stride=None, padding=0) -> Tensor:
     if not isinstance(input, Tensor):
         raise TypeError("max_pool2d input must be a Tensor")
     kernel_size = _pair(kernel_size, name="kernel_size")
@@ -103,8 +94,6 @@ def dropout(
     *,
     seed: int | None = None,
 ) -> Tensor:
-    """Inverted dropout built from an explicit random mask and Tensor multiply."""
-
     p = float(p)
     if not 0.0 <= p < 1.0:
         raise ValueError("dropout probability p must satisfy 0 <= p < 1")
@@ -113,7 +102,7 @@ def dropout(
     rng = np.random.default_rng(seed)
     mask = (rng.random(input.shape) >= p).astype(input.data.dtype)
     mask /= 1.0 - p
-    return input * Tensor(mask, dtype=input.dtype)
+    return input * Tensor(mask, dtype=input.dtype, device=input.device)
 
 
 def batch_norm(
@@ -127,15 +116,17 @@ def batch_norm(
     momentum: float = 0.1,
     eps: float = 1e-5,
 ) -> Tensor:
-    """Channel-wise batch normalization composed from existing Tensor ops.
-
-    Batch statistics participate in Autograd through normal Tensor operations;
-    running statistics are state buffers updated from NumPy observations.
-    """
-
     if input.ndim not in (2, 3, 4):
         raise ValueError("batch_norm expects 2-D, 3-D, or 4-D input")
     channels = input.shape[1]
+    for label, tensor in (
+        ("weight", weight),
+        ("bias", bias),
+        ("running_mean", running_mean),
+        ("running_var", running_var),
+    ):
+        if tensor is not None and tensor.device != input.device:
+            raise ValueError(f"batch_norm {label} device {tensor.device} != input device {input.device}")
     if weight is not None and weight.shape != (channels,):
         raise ValueError(f"batch_norm weight shape must be ({channels},)")
     if bias is not None and bias.shape != (channels,):
