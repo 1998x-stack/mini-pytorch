@@ -1,116 +1,112 @@
-# mini-pytorch v0.7 — Device / Backend Abstraction
+# mini-pytorch — Architecture-Driven PyTorch Learning Project
 
-> 这一版把“Tensor 住在哪里”正式变成框架的一等概念。
+> 用可运行的 Python/NumPy 代码，一层一层拆开 PyTorch 的核心机制。
 
-**版本主题：** Device → Backend-owned Storage → device-aware Dispatcher → Tensor.to
+**Latest integrated version:** `v0.7.0`
 
-**Package version：** `0.7.0`
+**Current main milestone:** Device / Backend abstraction
 
-**当前验证基线：** `103/103 tests passed`
+**Next milestone:** `v0.8` Advanced Autograd Engine
 
-## 1. v0.7 相比 v0.6 增加了什么
-
-v0.6 解决的是：
+mini-pytorch 不追求复制完整 PyTorch API，而是按照架构依赖顺序回答：
 
 ```text
-复杂 NN operator
-如何建立在 Dispatcher 上？
+Tensor 是什么？
+      ↓
+Autograd 为什么能 backward？
+      ↓
+Module / Parameter / Optimizer 如何组织训练状态？
+      ↓
+Dataset / Sampler / DataLoader 为什么拆开？
+      ↓
+Storage / stride / view 为什么重要？
+      ↓
+operator 为什么需要 Dispatcher？
+      ↓
+Conv2d 等复杂 NN operator 如何建立在 Dispatcher 上？
+      ↓
+Tensor 到底住在哪里，backend 如何拥有 allocation？
+      ↓
+Autograd engine 如何管理 graph lifetime / hooks / repeated backward？
 ```
 
-v0.7 继续解决：
+## 1. 版本学习地图
+
+| Version | 核心主题 | 最重要的问题 |
+|---|---|---|
+| `v0.1` | Tensor + Dynamic Autograd | `backward()` 如何自动求导？ |
+| `v0.2` | Optimizer + LR Scheduler | 优化状态为什么独立于模型？ |
+| `v0.3` | Dataset + Sampler + DataLoader + MNIST | 数据为什么拆成 storage / sampling / batching？ |
+| `v0.4` | Storage + stride + views + version counter | Tensor 为什么不等于 ndarray？ |
+| `v0.5` | Operator Schema + Dispatcher + Redispatch | 一个 `x + y` 为什么需要路由层？ |
+| `v0.6` | Conv2d / Pooling / Dropout / BatchNorm | 复杂 NN operator 如何复用 Dispatcher？ |
+| `v0.7` | Device / Backend | 多 backend 为什么不能靠散落的 `if device`？ |
+| `v0.8` | Advanced Autograd Engine | graph lifetime / hooks / retain_graph 如何工作？ |
+
+每个历史版本 branch 都有：
 
 ```text
-同一个 Tensor / operator API
-如何支持不同 device/backend？
+README.md   → 本版本学习入口
+version.md  → 与上一版的精确 delta
+Agents.md   → 本版本工程约束
 ```
 
-核心架构：
+## 2. 当前 main 完整架构
 
 ```text
-                       Tensor
-                         │
-        shape / stride / dtype / device
-                         │
-                         ▼
-                       Storage
-                         │
-                 backend-owned allocation
-                         │
-                         ▼
-                    logical operator
-                         │
-                         ▼
-                     Dispatcher
-              ┌──────────┴──────────┐
-              ▼                     ▼
-           CPU key                EDU key
-              │                     │
-              └──── backend kernel ─┘
-                         ▲
-                         │
-                   Autograd wrapper
+                             Tensor
+                shape / stride / dtype / device
+                               │
+                               ▼
+                             Storage
+              backend-owned allocation + version
+                               │
+                               ▼
+                        logical operator
+                               │
+                               ▼
+                     Operator Schema
+                               │
+                               ▼
+                           Dispatcher
+                  policy keys + backend keys
+             ┌─────────────────┼─────────────────┐
+             ▼                 ▼                 ▼
+          Autograd           NoGrad          CPU / EDU
+             │                                   │
+             └────────── redispatch ─────────────┘
+                               │
+                               ▼
+                         numerical kernel
+                               │
+                               ▼
+                         Tensor / GradFn
+
+nn.Module → functional NN op ─────────────────► Dispatcher
+
+Dataset → Sampler → BatchSampler → DataLoader → Tensor batches
+
+Module / Parameter → Optimizer → LR Scheduler
 ```
 
-这里的 `EDU` 是一个**模拟教育 backend**：底层仍使用 NumPy host memory，但拥有独立 Device、Backend 和 DispatchKey，因此可以在普通 CI 上验证真正的多 backend 路由逻辑。
+`EDU` 是 v0.7 的模拟教育 backend：拥有独立 Device / Backend / DispatchKey，但底层仍使用 NumPy host memory，从而可以在普通 CI 上验证多 backend 架构。它不是 CUDA，也不代表 GPU 加速。
 
-它不是 CUDA，也不宣称 GPU 加速。
+## 3. v0.7 最新能力
 
-## 2. 新增 Device
+### Device 是一等值对象
 
 ```python
-from mini_pytorch import Device
+from mini_pytorch import Device, Tensor
 
 cpu = Device("cpu")
 edu = Device("edu")
-edu0 = Device("edu:0")
+
+x = Tensor([1, 2, 3], device=edu)
+print(x.device)
+# edu
 ```
 
-`Device` 是 immutable value object，支持：
-
-- canonical string；
-- equality；
-- hash；
-- index；
-- validation。
-
-当前仅支持：
-
-```text
-cpu
-edu
-```
-
-## 3. Backend registry
-
-新增：
-
-```text
-mini_pytorch/backend.py
-```
-
-抽象边界：
-
-```text
-Backend
-├── allocate(size, dtype)
-├── from_numpy(array)
-└── to_numpy(allocation)
-```
-
-当前注册：
-
-```text
-cpu → NumPyBackend
-edu → EducationalBackend
-```
-
-因此现在 Storage 不再直接假设：
-
-```text
-Storage == NumPy array
-```
-
-而是：
+### Storage 由 backend 拥有
 
 ```text
 Storage
@@ -120,222 +116,50 @@ Storage
 └── VersionCounter
 ```
 
-## 4. Tensor.device
+当前 backend registry：
 
-```python
-from mini_pytorch import Tensor
-
-x = Tensor([1, 2, 3])
-print(x.device)
-# cpu
-
-y = Tensor([1, 2, 3], device="edu")
-print(y.device)
-# edu
+```text
+cpu → NumPyBackend
+edu → EducationalBackend
 ```
 
-Tensor view 继续共享 Storage，因此也共享同一个 device。
-
-## 5. Tensor.to(device)
-
-### same device
+### Tensor.to(device)
 
 ```python
-x.to("cpu") is x
-# True
-```
-
-默认不复制。
-
-如果：
-
-```python
-copy = x.to("cpu", copy=True)
-```
-
-则创建新的 Storage。
-
-### cross-device
-
-```python
+x = Tensor([1.0, 2.0], requires_grad=True)
 y = x.to("edu")
 ```
 
-会：
+语义：
 
 ```text
-source logical values
-        ↓
-new EDU Storage
-        ↓
-new Tensor
+same device + copy=False → return self
+same device + copy=True  → new Storage
+cross-device             → new target Storage
 ```
 
-不会共享原 Storage。
+跨设备 transfer 按逻辑值复制，因此断开 Storage alias；但在 grad mode 下通过 CopyBackward 保持梯度链路。
 
-如果源 Tensor 是 non-contiguous view，transfer 会按照**逻辑值**物化成新的 contiguous target Tensor。
+### Device-aware Dispatcher
 
-## 6. Device copy 仍然支持 Autograd
+```text
+CPU + grad  → {Autograd, CPU}
+EDU + grad  → {Autograd, EDU}
+CPU no_grad → {NoGrad, CPU}
+EDU no_grad → {NoGrad, EDU}
+```
+
+因此 Autograd 仍是 policy layer，backend identity 在 redispatch 之后继续存在。
+
+### Mixed-device protection
 
 ```python
-x = Tensor([2.0, -3.0], requires_grad=True)
-y = x.to("edu")
-loss = (y * y).sum()
-loss.backward()
+Tensor([1.0], device="cpu") + Tensor([2.0], device="edu")
 ```
 
-梯度仍会回到原始 CPU Tensor：
+会在 backend math 前明确报 device mismatch，而不是偷偷复制。
 
-```text
-x(cpu)
-  ↓
-CopyToDevice
-  ↓
-y(edu)
-  ↓
-y*y
-  ↓
-sum
-  ↓
-backward
-  ↓
-x.grad
-```
-
-v0.7 的 device copy backward 是 identity gradient：
-
-```text
-dL/dx = dL/dy
-```
-
-因为这一版不做 dtype conversion。
-
-## 7. Dispatcher 现在真正 device-aware
-
-CPU Tensor：
-
-```text
-DispatchKeySet {CPU}
-```
-
-EDU Tensor：
-
-```text
-DispatchKeySet {EDU}
-```
-
-requires-grad CPU：
-
-```text
-{Autograd, CPU}
-```
-
-requires-grad EDU：
-
-```text
-{Autograd, EDU}
-```
-
-Autograd wrapper 只 remove：
-
-```text
-Autograd
-```
-
-然后 redispatch，因此 backend identity 会保留：
-
-```text
-{Autograd, EDU}
-      ↓
-remove Autograd
-      ↓
-{EDU}
-      ↓
-EDU registration
-```
-
-## 8. Mixed-device operation 会明确失败
-
-```python
-cpu = Tensor([1.0], device="cpu")
-edu = Tensor([2.0], device="edu")
-
-cpu + edu
-```
-
-不会偷偷 copy，而是：
-
-```text
-DispatchError:
-operator received tensors on different devices
-```
-
-这一步发生在 backend math 之前。
-
-## 9. Scalar promotion 会继承 owning device
-
-以前：
-
-```python
-x + 3.0
-```
-
-如果无脑把 `3.0` 包成默认 Tensor，很容易偷偷创建 CPU Tensor。
-
-现在：
-
-```python
-x_edu + 3.0
-```
-
-会把 scalar 包装到：
-
-```text
-edu
-```
-
-同样：
-
-```python
-2.0 * x_edu
-```
-
-也保持 EDU route。
-
-## 10. 旧的 Function.apply 路径也保持 device
-
-v0.7 之前并不是所有 operator 都已经迁移到 Dispatcher。
-
-例如：
-
-```text
-exp
-log
-div
-部分 layout operator
-```
-
-仍走：
-
-```text
-Function.apply
-```
-
-v0.7 已经让这条路径也遵守：
-
-```text
-common input device
-      ↓
-output keeps device
-```
-
-mixed-device direct Function inputs 也会提前报错。
-
-所以 device 语义不会依赖“这个 operator 是否已经迁入 Dispatcher”。
-
-## 11. Module.to(device)
-
-现在可以：
+### Module.to(device)
 
 ```python
 model = nn.Sequential(
@@ -346,7 +170,7 @@ model = nn.Sequential(
 model.to("edu")
 ```
 
-递归移动：
+会递归迁移：
 
 ```text
 Parameters
@@ -354,62 +178,73 @@ Buffers
 child Modules
 ```
 
-而 Parameter 对象本身不会被替换，因此 module registration 保持稳定。
+同时保持 Parameter 对象和注册关系。
 
-建议和 PyTorch 常见工作流一样：
+## 4. 从零阅读源码的推荐顺序
 
-```text
-先 model.to(device)
-再创建 optimizer
-```
-
-## 12. CNN operator 在 EDU 上也可执行
-
-当前这些 dispatched operators 都有 CPU + EDU registration：
+### v0.1 — Autograd
 
 ```text
-add
-mul
-matmul
-relu
-sum
-conv2d
-max_pool2d
+mini_pytorch/autograd.py
+mini_pytorch/tensor.py
+mini_pytorch/ops.py
+mini_pytorch/nn/module.py
 ```
 
-EDU registration 当前复用同一组 NumPy reference math。
-
-这并不意味着 CPU/EDU 是相同 backend，而是意味着：
-
-> backend routing 已经独立于 numerical implementation。
-
-未来真实 accelerator backend 可以替换其中一侧 kernel，而不需要修改 Tensor API。
-
-## 13. 新增核心文件
+### v0.2 — Optimization
 
 ```text
-mini_pytorch/device.py
-mini_pytorch/backend.py
-tests/test_device_backend.py
-docs/DEVICE_BACKEND.md
-examples/10_device_backend.py
+mini_pytorch/optim/optimizer.py
+mini_pytorch/optim/sgd.py
+mini_pytorch/optim/adam.py
+mini_pytorch/optim/lr_scheduler.py
 ```
 
-重点修改：
+### v0.3 — Data pipeline
+
+```text
+mini_pytorch/data/dataset.py
+mini_pytorch/data/sampler.py
+mini_pytorch/data/dataloader.py
+mini_pytorch/data/mnist.py
+examples/06_mnist_mlp.py
+```
+
+### v0.4 — Tensor memory model
 
 ```text
 mini_pytorch/storage.py
 mini_pytorch/tensor.py
-mini_pytorch/autograd.py
+docs/TENSOR_MEMORY.md
+examples/07_tensor_memory.py
+```
+
+### v0.5 — Dispatcher
+
+```text
 mini_pytorch/dispatcher.py
+mini_pytorch/operator_registry.py
+mini_pytorch/kernels.py
+docs/DISPATCHER.md
+examples/08_dispatcher.py
+```
+
+### v0.6 — CNN operator stack
+
+```text
+mini_pytorch/kernels.py
+mini_pytorch/nn_ops.py
 mini_pytorch/operator_registry.py
 mini_pytorch/functional.py
-mini_pytorch/nn/module.py
-mini_pytorch/__init__.py
-pyproject.toml
+mini_pytorch/nn/conv.py
+mini_pytorch/nn/pooling.py
+mini_pytorch/nn/dropout.py
+mini_pytorch/nn/batchnorm.py
+docs/CNN_OPERATORS.md
+examples/09_cnn_mnist.py
 ```
 
-## 14. 推荐阅读顺序
+### v0.7 — Device / Backend
 
 ```text
 mini_pytorch/device.py
@@ -433,93 +268,93 @@ docs/DEVICE_BACKEND.md
 examples/10_device_backend.py
 ```
 
-## 15. 快速运行
+## 5. 快速运行
+
+Python 3.10+：
 
 ```bash
 pip install -e .
 python -m unittest discover -s tests -v
 ```
 
-运行 device/backend 示例：
+当前集成基线：
+
+```text
+103 tests
+OK
+```
+
+运行 Device / Backend 示例：
 
 ```bash
 python examples/10_device_backend.py
 ```
 
-## 16. 当前验证基线
+运行 Dispatcher 示例：
 
-GitHub Actions：
-
-```text
-Python 3.11
-NumPy 2.4.6
-
-Ran 103 tests
-OK
+```bash
+python examples/08_dispatcher.py
 ```
 
-其中 v0.7 新增覆盖：
+运行 CNN MNIST 教学规模：
 
-- Device parsing / equality / hash / validation；
-- Backend registry；
-- Storage.device；
-- Tensor.device；
-- same-device `.to()` no-op；
-- same-device forced copy；
-- cross-device Storage copy；
-- alias break；
-- differentiable transfer；
-- CPU vs EDU DispatchKey；
-- Autograd / NoGrad above EDU；
-- mixed-device error；
-- scalar promotion；
-- direct Function.apply device preservation；
-- Module.to Parameters/Buffers；
-- Conv2d / MaxPool2d on EDU。
+```bash
+python examples/09_cnn_mnist.py \
+  --epochs 2 \
+  --train-limit 1000 \
+  --test-limit 300 \
+  --implementation im2col
+```
 
-## 17. Explicit non-goals
+## 6. 当前明确限制
 
-v0.7 明确没有：
+截至 v0.7，项目刻意还没有：
 
-- real CUDA；
-- CuPy；
-- async copy；
+- real CUDA / CuPy；
+- async device copy；
 - pinned memory；
 - streams/events；
 - mixed precision；
 - caching allocator；
-- distributed execution。
+- grouped/depthwise Conv2d beyond current boundary；
+- distributed training；
+- graph capture；
+- compiler lowering/fusion。
 
-这些不是“漏做”，而是后续 runtime/device 深化版本的范围。
+这些由后续版本按依赖顺序引入。
 
-## 18. 下一版本
+## 7. 为什么下一版是 Advanced Autograd
 
-`v0.8` 应进入 **Advanced Autograd Engine**：
-
-```text
-graph lifetime
-retain_grad
-hooks
-retain_graph
-custom Function
-higher-order gradient concepts
-```
-
-到这里，mini-pytorch 已经从：
+现在框架已经具备：
 
 ```text
-Tensor
+Tensor memory identity
+        +
+operator routing
+        +
+NN operators
+        +
+device/backend placement
 ```
 
-逐步建立到：
+但当前 Autograd engine 仍然非常朴素：graph 构建后长期留在对象上，non-leaf grad 不保留，没有 hooks，也没有 `retain_graph` 的 graph lifecycle。
+
+因此 v0.8 应开始回答：
 
 ```text
-Tensor
-+ Autograd
-+ Optimizer
-+ Data pipeline
-+ Storage/views
-+ Dispatcher
-+ CNN operators
-+ Device/Backend
+forward graph
+    ↓
+backward traversal
+    ↓
+什么时候释放 saved state？
+    ↓
+为什么第二次 backward 会失败？
+    ↓
+retain_graph=True 保留了什么？
+    ↓
+non-leaf retain_grad() 怎么实现？
+    ↓
+gradient hook 在什么时机执行？
 ```
+
+详细任务见 `Plan.md`。
