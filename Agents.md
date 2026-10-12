@@ -1,4 +1,4 @@
-# Agents.md — mini-pytorch v0.6 Development Contract
+# Agents.md — mini-pytorch v0.6 Frozen Branch Contract
 
 > Read this file before modifying the `v0.6` branch.
 
@@ -7,11 +7,9 @@
 - Branch: `v0.6`
 - Previous version: `v0.5`
 - Primary mental model: **neural-network operator stack / CNN built on Dispatcher**
-- Status: active until the v0.6 Definition of Done is satisfied, then frozen
+- Status: **frozen historical learning snapshot**
 
-## 1. Scope rule
-
-v0.6 teaches one architectural transition:
+## 1. What v0.6 teaches
 
 ```text
 Module API
@@ -25,7 +23,7 @@ Autograd wrapper
 CPU numerical kernel
 ```
 
-The primary scope is:
+The version scope is intentionally limited to:
 
 - Conv2d
 - MaxPool2d
@@ -33,23 +31,49 @@ The primary scope is:
 - BatchNorm1d / BatchNorm2d
 - CNN MNIST integration
 
-Do not turn v0.6 into a general device/backend release.
+## 2. Historical branch rule
 
-## 2. Mandatory reading order
+This branch is frozen.
 
-Before code changes, read:
+Allowed changes:
 
-1. `Agents.md`
-2. `version.md`
+- documentation corrections;
+- tests that clarify v0.6 promised behavior;
+- narrowly scoped bug fixes inside the v0.6 feature boundary.
+
+Forbidden changes:
+
+- v0.7 Device/backend work;
+- CUDA execution;
+- `.to(device)`;
+- distributed training;
+- compiler work;
+- future-version APIs merely for convenience.
+
+Future development must begin from latest `main`, not from this frozen branch.
+
+## 3. Required reading order
+
+To study v0.6:
+
+1. `version.md`
+2. `README.md`
 3. `docs/DISPATCHER.md`
-4. `mini_pytorch/dispatcher.py`
-5. `mini_pytorch/operator_registry.py`
-6. `mini_pytorch/kernels.py`
-7. relevant `nn/*`, tests and examples
+4. `docs/CNN_OPERATORS.md`
+5. `mini_pytorch/kernels.py`
+6. `mini_pytorch/nn_ops.py`
+7. `mini_pytorch/operator_registry.py`
+8. `mini_pytorch/functional.py`
+9. `mini_pytorch/nn/conv.py`
+10. `mini_pytorch/nn/pooling.py`
+11. `mini_pytorch/nn/dropout.py`
+12. `mini_pytorch/nn/batchnorm.py`
+13. `tests/test_cnn_ops.py`
+14. `examples/09_cnn_mnist.py`
 
-## 3. Conv2d architecture contract
+## 4. Conv2d architecture invariant
 
-Required call path:
+The intended call path is:
 
 ```text
 nn.Conv2d.forward
@@ -65,137 +89,92 @@ Autograd wrapper when needed
 CPU Conv2d kernel
 ```
 
-Forbidden shortcuts:
+Do not move convolution loops into `nn.Conv2d.forward`.
+Do not duplicate Autograd policy inside the CPU kernel.
 
-- putting convolution loops directly in `nn.Conv2d.forward`;
-- bypassing Dispatcher for the main Conv2d implementation;
-- embedding Autograd graph policy in the CPU kernel;
-- adding device-specific branches in `Tensor`.
+## 5. Reference-first kernel invariant
 
-## 4. Reference-first performance rule
-
-Implementation order:
+v0.6 deliberately keeps both:
 
 ```text
-readable nested-loop Conv2d
-        ↓
-correctness + gradient tests
-        ↓
-im2col implementation
-        ↓
-reference/im2col equivalence
-        ↓
-optional benchmark
+readable nested-loop reference
+            +
+im2col + matrix multiplication
 ```
 
-Keep both paths. The readable reference implementation is part of the learning artifact.
+The optimized educational path must remain numerically equivalent to the readable reference path.
 
-## 5. Supported Conv2d surface
+## 6. Supported Conv2d boundary
 
-v0.6 should support:
+v0.6 supports:
 
-- NCHW input
-- OIHW weights
-- optional bias represented through the functional/module API
-- integer or pair `kernel_size`
-- integer or pair `stride`
-- integer or pair `padding`
-- integer or pair `dilation`
-- `groups=1`
+- NCHW input;
+- OIHW weights;
+- bias;
+- stride;
+- padding;
+- dilation;
+- `groups=1`.
 
-If `groups != 1`, raise a clear error. Do not silently pretend grouped convolution is supported.
+`groups != 1` must fail clearly. Grouped/depthwise convolution belongs to a later expansion if explicitly planned.
 
-## 6. Pooling contract
+## 7. State semantics
 
-MaxPool2d should:
-
-- route through Dispatcher;
-- preserve NCHW shape reasoning;
-- define deterministic tie behavior through NumPy first-max semantics;
-- route backward gradient only to selected maxima;
-- expose kernel size / stride / padding.
-
-## 7. Dropout contract
-
-Dropout should demonstrate policy rather than backend complexity:
-
-- training randomly masks elements;
-- surviving activations scale by `1/(1-p)`;
-- eval is identity;
-- deterministic tests must be possible with a seed;
-- no generated masks/checkpoints are committed.
-
-## 8. BatchNorm contract
-
-BatchNorm must make Parameter vs Buffer visible:
+BatchNorm preserves the v0.6 state distinction:
 
 ```text
-weight / bias        → Parameters
-running_mean / var   → Buffers
+weight / bias
+    ↓
+Parameters
+
+running_mean / running_var / num_batches_tracked
+    ↓
+Buffers
 ```
 
-Requirements:
+Buffers belong in `state_dict()` but not `parameters()`.
 
-- training uses batch statistics;
-- evaluation uses running statistics when tracking is enabled;
-- affine parameters are optional;
-- running statistics participate in `state_dict()` but not `parameters()`;
-- running-stat updates are tracked framework mutations.
+## 8. Validation contract
 
-## 9. Testing contract
+The release-candidate implementation passed:
 
-Before freeze, tests must cover:
+```text
+90 tests
+OK
+```
 
-- Conv2d forward reference values;
-- Conv2d shape validation;
-- Conv2d input/weight/bias finite-difference gradients;
-- Dispatcher route `Autograd → CPU`;
+Coverage includes:
+
+- Conv2d reference values;
 - im2col/reference equivalence;
+- finite-difference input/weight/bias gradients;
+- Dispatcher Autograd route;
 - MaxPool2d forward/backward;
-- Dropout train/eval and deterministic seed behavior;
-- BatchNorm train/eval, parameter/buffer distinction, state_dict;
-- one CNN end-to-end forward/backward/optimizer step;
-- complete regression suite.
+- Dropout train/eval/seed behavior;
+- BatchNorm state and train/eval behavior;
+- CNN end-to-end optimizer step;
+- all previous regression tests.
 
-Full command:
+Any future permitted bug fix on this branch must run the complete suite:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-Exact final v0.6 branch-head GitHub Actions must be green before freeze.
+## 9. Explicit non-goals
 
-## 10. Documentation contract
+Do not add here:
 
-v0.6 must include/update:
+- device abstraction;
+- accelerator allocation;
+- CUDA kernels;
+- ConvTranspose;
+- full grouped/depthwise convolution;
+- distributed training;
+- graph capture/compiler subsystems.
 
-- `README.md`
-- `version.md`
-- `Agents.md`
-- `docs/CNN_OPERATORS.md`
-- `examples/09_cnn_mnist.py`
-- package version
+## 10. Next development location
 
-## 11. Explicit non-goals
+The next planned version is `v0.7` and must be created from latest `main` after v0.6 integration.
 
-Do not add in v0.6:
-
-- CUDA execution
-- `.to(device)`
-- distributed training
-- graph compiler work
-- ConvTranspose
-- full grouped/depthwise convolution
-- mixed precision
-- production-grade kernel selection/autotuning
-
-## 12. Freeze rule
-
-When all v0.6 acceptance criteria pass:
-
-1. change `version.md` status to frozen;
-2. make README identify a frozen v0.6 snapshot;
-3. run CI on the exact final branch head;
-4. integrate the validated v0.6 tree into `main`;
-5. restore canonical `main/Agents.md` and project README;
-6. advance `main/Plan.md` to v0.7 Device / Backend.
+v0.7's mental model is **Device / Backend abstraction**, not additional CNN feature accumulation.
