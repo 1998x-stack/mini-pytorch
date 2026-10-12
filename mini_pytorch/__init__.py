@@ -6,4 +6,4 @@ from . import nn
 from . import optim
 
 __all__ = ["Tensor", "no_grad", "functional", "nn", "optim"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
