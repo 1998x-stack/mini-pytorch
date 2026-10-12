@@ -4,6 +4,7 @@ from .tensor import Tensor
 from . import functional
 from . import nn
 from . import optim
+from . import data
 
-__all__ = ["Tensor", "no_grad", "functional", "nn", "optim"]
-__version__ = "0.2.0"
+__all__ = ["Tensor", "no_grad", "functional", "nn", "optim", "data"]
+__version__ = "0.3.0"
