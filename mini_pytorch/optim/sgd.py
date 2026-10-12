@@ -1,4 +1,4 @@
-"""Stochastic gradient descent."""
+"""Stochastic gradient descent with momentum and Nesterov acceleration."""
 from __future__ import annotations
 
 import numpy as np
@@ -12,39 +12,56 @@ class SGD(Optimizer):
         params,
         lr: float = 1e-2,
         momentum: float = 0.0,
+        dampening: float = 0.0,
         weight_decay: float = 0.0,
+        nesterov: bool = False,
     ) -> None:
         if lr < 0:
             raise ValueError("lr must be non-negative")
         if momentum < 0:
             raise ValueError("momentum must be non-negative")
+        if dampening < 0:
+            raise ValueError("dampening must be non-negative")
         if weight_decay < 0:
             raise ValueError("weight_decay must be non-negative")
+        if nesterov and (momentum <= 0 or dampening != 0):
+            raise ValueError("Nesterov requires momentum > 0 and dampening == 0")
+
         super().__init__(
             params,
-            defaults={"lr": lr, "momentum": momentum, "weight_decay": weight_decay},
+            defaults={
+                "lr": lr,
+                "momentum": momentum,
+                "dampening": dampening,
+                "weight_decay": weight_decay,
+                "nesterov": nesterov,
+            },
         )
 
     def step(self) -> None:
         for group in self.param_groups:
             lr = group["lr"]
             momentum = group["momentum"]
+            dampening = group["dampening"]
             weight_decay = group["weight_decay"]
+            nesterov = group["nesterov"]
 
             for p in group["params"]:
                 if p.grad is None:
                     continue
-                grad = p.grad
+                grad = np.asarray(p.grad)
+
                 if weight_decay != 0:
                     grad = grad + weight_decay * p.data
 
                 if momentum != 0:
                     state = self.state.setdefault(id(p), {})
-                    velocity = state.get("momentum_buffer")
-                    if velocity is None:
-                        velocity = np.zeros_like(p.data)
-                    velocity = momentum * velocity + grad
-                    state["momentum_buffer"] = velocity
-                    grad = velocity
+                    buf = state.get("momentum_buffer")
+                    if buf is None:
+                        buf = grad.copy()
+                    else:
+                        buf = momentum * buf + (1.0 - dampening) * grad
+                    state["momentum_buffer"] = buf
+                    grad = grad + momentum * buf if nesterov else buf
 
                 p.data -= lr * grad
