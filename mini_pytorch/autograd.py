@@ -1,13 +1,15 @@
-"""Autograd building blocks.
+"""Autograd graph-building primitives for mini-pytorch v0.8.
 
-v0.4 adds saved-tensor version checks. v0.7 keeps Function.apply device-aware
-so direct educational operators preserve a common input device and reject
-mixed-device positional Tensor inputs before numerical work.
+The module owns graph construction objects (`Context`, `GradFn`, `Function`) and
+grad-mode state. Backward execution/lifetime policy lives in
+``mini_pytorch.autograd_engine``.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+import itertools
 from typing import Any, Type
+import weakref
 
 import numpy as np
 
@@ -34,24 +36,58 @@ def is_grad_enabled() -> bool:
     return _GRAD_ENABLED
 
 
+class RemovableHandle:
+    """Small idempotent handle returned by ``Tensor.register_hook``."""
+
+    _next_id = itertools.count()
+
+    def __init__(self, tensor: "Tensor") -> None:
+        self.id = next(self._next_id)
+        self._tensor_ref = weakref.ref(tensor)
+
+    def remove(self) -> None:
+        tensor = self._tensor_ref()
+        if tensor is not None:
+            tensor._backward_hooks.pop(self.id, None)
+
+
 class Context:
-    """Per-operation storage used to pass values from forward to backward."""
+    """Per-operation state passed from forward to backward.
+
+    v0.8 makes lifetime explicit. A default backward releases Context state;
+    ``retain_graph=True`` asks the Engine to preserve it for another execution.
+    """
 
     def __init__(self) -> None:
         self.saved_tensors: tuple[np.ndarray, ...] = ()
         self._tensor_inputs: tuple["Tensor", ...] = ()
         self._raw_inputs: tuple[np.ndarray, ...] = ()
         self._saved_versions: list[tuple["Tensor", int]] = []
+        self._released = False
+
+    @property
+    def is_released(self) -> bool:
+        return self._released
+
+    def ensure_available(self) -> None:
+        if self._released:
+            raise RuntimeError(
+                "trying to backward through a graph whose saved state has already "
+                "been released; call backward(retain_graph=True) on the earlier "
+                "backward if the graph must be reused"
+            )
 
     def _bind_inputs(
         self,
         tensors: tuple["Tensor", ...],
         arrays: tuple[np.ndarray, ...],
     ) -> None:
+        self.ensure_available()
         self._tensor_inputs = tensors
         self._raw_inputs = arrays
 
     def save_for_backward(self, *arrays: np.ndarray) -> None:
+        self.ensure_available()
         self.saved_tensors = tuple(arrays)
         self._saved_versions = []
         seen_storage_ids: set[int] = set()
@@ -67,6 +103,7 @@ class Context:
                     break
 
     def check_saved_versions(self) -> None:
+        self.ensure_available()
         for tensor, expected in self._saved_versions:
             actual = tensor._version
             if actual != expected:
@@ -76,10 +113,26 @@ class Context:
                     f"{expected}, found {actual}"
                 )
 
+    def release(self) -> None:
+        """Release references that exist only to execute backward.
+
+        Shape/config attributes deliberately remain for inspectability, but the
+        potentially large arrays/Tensor references are dropped and the Context
+        becomes permanently unavailable for another backward execution.
+        """
+
+        if self._released:
+            return
+        self.saved_tensors = ()
+        self._saved_versions = []
+        self._tensor_inputs = ()
+        self._raw_inputs = ()
+        self._released = True
+
 
 @dataclass
 class GradFn:
-    """One node of the dynamic autograd graph."""
+    """One node of the dynamic reverse-mode graph."""
 
     function: Type["Function"]
     parents: tuple["Tensor", ...]
@@ -89,9 +142,20 @@ class GradFn:
     def name(self) -> str:
         return f"{self.function.__name__}Backward"
 
+    @property
+    def is_released(self) -> bool:
+        return self.ctx.is_released
+
+    def release(self) -> None:
+        self.ctx.release()
+
 
 class Function:
-    """Base class for differentiable operations."""
+    """Base class for differentiable educational operations.
+
+    Subclasses implement numerical ``forward`` and vector-Jacobian-product
+    ``backward`` methods. ``apply`` builds the GradFn/Context edge.
+    """
 
     @classmethod
     def apply(cls, *inputs: "Tensor", **kwargs: Any) -> "Tensor":
