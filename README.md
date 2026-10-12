@@ -1,168 +1,180 @@
-# mini-pytorch v0.5 — Operator Registry + Dispatcher
+# mini-pytorch — Architecture-Driven PyTorch Learning Project
 
-> 从这一版开始，`Tensor.__add__` 不再直接决定“怎么计算”，而是只负责调用一个**逻辑 operator**。
+> 用可运行的 Python/NumPy 代码，一层一层拆开 PyTorch 的核心机制。
 
-**版本主题：** Operator Schema → Registry → DispatchKeySet → Dispatcher → Redispatch
+**Latest integrated version:** `v0.5.0`
 
-**状态：** frozen historical learning snapshot
+**Current main milestone:** Operator Registry + Dispatcher + Redispatch
 
-**Package version：** `0.5.0`
-
-## 1. 为什么 PyTorch 需要 Dispatcher
-
-如果没有 Dispatcher，Tensor 很容易变成：
-
-```python
-if device == "cpu":
-    ...
-elif device == "cuda":
-    ...
-if requires_grad:
-    ...
-if autocast:
-    ...
-```
-
-功能越多，Tensor 方法越不可维护。
-
-v0.5 改成：
+mini-pytorch 的目标不是复制完整 PyTorch，而是按照架构依赖顺序回答：
 
 ```text
-x + y
-  ↓
-Tensor.__add__
-  ↓
-aten::add.Tensor
-  ↓
-Dispatcher
-  ↓
-DispatchKeySet
-  ↓
-selected implementation
-```
-
-一个逻辑 operator 可以拥有多个实现。
-
-## 2. 当前 DispatchKey
-
-教学版只保留四个 key：
-
-```text
-Autograd
-NoGrad
-CUDA      ← reserved, v0.5 不实现真实 CUDA
-CPU
-```
-
-优先级：
-
-```text
-Autograd > NoGrad > CUDA > CPU
-```
-
-普通 Tensor：
-
-```text
-{CPU}
-  ↓
-CPU kernel
-```
-
-`requires_grad=True`：
-
-```text
-{Autograd, CPU}
+Tensor 是什么？
       ↓
-Autograd wrapper
-      ↓ redispatch(remove Autograd)
-{CPU}
+Autograd 为什么能自动 backward？
       ↓
-CPU kernel
+Module / Parameter / Optimizer 如何组织训练状态？
+      ↓
+数据如何经过 Dataset / Sampler / DataLoader？
+      ↓
+Storage / stride / view 为什么重要？
+      ↓
+一个 operator 为什么需要 Dispatcher？
+      ↓
+如何继续扩展 CNN / device / distributed / compiler？
 ```
 
-`no_grad()`：
+## 1. 版本学习地图
+
+| Version | 核心主题 | 最重要的问题 |
+|---|---|---|
+| `v0.1` | Tensor + Dynamic Autograd | `backward()` 到底如何自动求导？ |
+| `v0.2` | Optimizer + LR Scheduler | 优化状态为什么独立于模型？ |
+| `v0.3` | Dataset + Sampler + DataLoader + MNIST | 数据为什么要拆成 dataset / sampling / batching？ |
+| `v0.4` | Storage + stride + views + version counter | Tensor 为什么不等于 ndarray？ |
+| `v0.5` | Operator Schema + Dispatcher + Redispatch | 一个 `x + y` 为什么需要路由层？ |
+| `v0.6` | CNN operator stack | 如何让 Conv2d 等复杂算子建立在 Dispatcher 上？ |
+
+每个历史分支都有自己的：
 
 ```text
-{NoGrad, CPU}
-      ↓
-NoGrad fallback
-      ↓ redispatch(remove NoGrad)
-{CPU}
-      ↓
-CPU kernel
+README.md   → 学习入口
+version.md  → 精确版本边界
+Agents.md   → 该分支开发约束
 ```
 
-## 3. Schema 和 Kernel 不是一回事
+## 2. 当前 main 的完整架构
 
-Schema 描述“这个 operator 是什么”：
+```text
+                         Tensor API
+                             │
+                             ▼
+                    Storage-backed Tensor
+              shape / stride / storage_offset
+                             │
+                             ▼
+                       logical operator
+                             │
+                             ▼
+                     Operator Schema
+                             │
+                             ▼
+                        Dispatcher
+                             │
+                    DispatchKeySet
+                 ┌───────────┼───────────┐
+                 ▼           ▼           ▼
+             Autograd      NoGrad       CPU
+                 │           │           │
+                 └──── redispatch ───────┘
+                             │
+                             ▼
+                        NumPy kernel
+                             │
+                             ▼
+                     Tensor / GradFn
+
+Module / Parameter ──► nn ──► Loss
+                         │
+                         ▼
+                      Optimizer
+                         │
+                      Scheduler
+
+Dataset → Sampler → BatchSampler → DataLoader → Tensor batches
+```
+
+## 3. v0.5 当前重点
+
+当前首批经过 Dispatcher 的 operator：
 
 ```text
 aten::add.Tensor
-(Tensor self, Tensor other) -> Tensor
+aten::mul.Tensor
+aten::matmul.default
+aten::relu.default
+aten::sum.default
 ```
 
-Kernel 描述“某个 dispatch key 下怎么实现”：
+典型 requires-grad 调用：
 
 ```text
-aten::add.Tensor
-├── Autograd → autograd wrapper
-└── CPU      → NumPy add kernel
-```
-
-这使 API identity 与 implementation identity 分离。
-
-## 4. v0.5 首批 Dispatcher operator
-
-- `aten::add.Tensor`
-- `aten::mul.Tensor`
-- `aten::matmul.default`
-- `aten::relu.default`
-- `aten::sum.default`
-
-对应 Tensor API：
-
-```python
-x + y
 x * y
-x @ y
-x.relu()
-x.sum()
+  ↓
+Tensor.__mul__
+  ↓
+aten::mul.Tensor
+  ↓
+DispatchKeySet{Autograd, CPU}
+  ↓
+Autograd wrapper
+  ↓ redispatch(remove Autograd)
+CPU kernel
+  ↓
+attach MulBackward
 ```
 
-其他算子暂时仍走 v0.4 的直接 `Function.apply()` 路径，便于清晰对比重构前后架构。
+因此 CPU kernel 不再需要知道 dynamic graph policy。
 
-## 5. Autograd 为什么是 dispatch layer
+## 4. 从零开始的推荐学习顺序
 
-以 `x * x` 为例：
+### 第一阶段 — v0.1：Autograd
 
 ```text
-Tensor.__mul__
-   ↓
-Dispatcher
-   ↓ choose Autograd
-Autograd Mul wrapper
-   ├── save backward context
-   └── redispatch
-          ↓
-        CPU Mul kernel
-          ↓
-        Tensor result
-          ↓
-      attach MulBackward
+mini_pytorch/autograd.py
+mini_pytorch/tensor.py
+mini_pytorch/ops.py
+mini_pytorch/nn/module.py
+mini_pytorch/optim/optimizer.py
 ```
 
-因此 CPU kernel 只需要知道数值计算，不需要知道：
+理解：
 
-- `requires_grad`
-- `GradFn`
-- graph construction
-- `no_grad()`
+```text
+Function.apply
+Context
+GradFn
+DAG backward
+broadcast gradient reduction
+Parameter registration
+```
 
-这就是 backend kernel 与 Autograd policy 分离的价值。
+### 第二阶段 — v0.2：Optimization
 
-## 6. 核心源码
+```text
+mini_pytorch/optim/optimizer.py
+mini_pytorch/optim/sgd.py
+mini_pytorch/optim/adam.py
+mini_pytorch/optim/lr_scheduler.py
+```
 
-推荐阅读：
+理解 parameter groups、optimizer state、momentum、Adam moments 和 scheduler lifecycle。
+
+### 第三阶段 — v0.3：Data pipeline
+
+```text
+mini_pytorch/data/dataset.py
+mini_pytorch/data/sampler.py
+mini_pytorch/data/dataloader.py
+mini_pytorch/data/mnist.py
+examples/06_mnist_mlp.py
+```
+
+理解 Dataset / Sampler / BatchSampler / collate 的职责分离。
+
+### 第四阶段 — v0.4：Tensor memory model
+
+```text
+mini_pytorch/storage.py
+mini_pytorch/tensor.py
+tests/test_storage.py
+docs/TENSOR_MEMORY.md
+examples/07_tensor_memory.py
+```
+
+理解 Storage、stride、offset、view、reshape、contiguous、alias 和 inplace version safety。
+
+### 第五阶段 — v0.5：Dispatcher
 
 ```text
 mini_pytorch/dispatcher.py
@@ -182,74 +194,116 @@ docs/DISPATCHER.md
 examples/08_dispatcher.py
 ```
 
-## 7. 快速运行
+重点理解：
+
+```text
+schema != kernel
+DispatchKeySet
+priority
+fallback
+redispatch
+Autograd wrapper
+backend kernel
+```
+
+## 5. 快速运行
+
+要求 Python 3.10+。
 
 ```bash
 pip install -e .
 python -m unittest discover -s tests -v
+```
+
+运行当前 Dispatcher 教学示例：
+
+```bash
 python examples/08_dispatcher.py
 ```
 
-冻结前的精确 release-candidate HEAD 已在 GitHub Actions 上通过：
+运行 Tensor memory 示例：
+
+```bash
+python examples/07_tensor_memory.py
+```
+
+查看 MNIST 训练入口：
+
+```bash
+python examples/06_mnist_mlp.py --help
+```
+
+## 6. 当前测试基线
+
+v0.5 release candidate 和 frozen branch 均已经通过 GitHub Actions 全量回归：
 
 ```text
-Ran 80 tests in 0.739s
+80 tests
 OK
 ```
 
-## 8. 一个最小 introspection 示例
+覆盖：
 
-```python
-from mini_pytorch import Tensor, dispatcher
+- dynamic Autograd
+- classification
+- Dataset/DataLoader/MNIST
+- optimizers
+- LR schedulers
+- Storage / stride / views
+- inplace version safety
+- operator schema / registry
+- CPU / Autograd / NoGrad dispatch
+- redispatch and error paths
 
-x = Tensor([1.0, 2.0], requires_grad=True)
-y = Tensor([3.0, 4.0])
+## 7. 当前刻意没有实现
 
-print(dispatcher.explain("aten::add.Tensor", x, y))
-```
+为了保持“一版一个核心 mental model”，main 当前还没有：
 
-应得到 `Autograd` 作为最高优先级 key；而在 `no_grad()` 中会选择 `NoGrad` fallback，再 redispatch 到 CPU。
+- Conv2d / MaxPool2d
+- BatchNorm / Dropout 完整 operator stack
+- real CUDA/device backend
+- `.to(device)`
+- multiprocessing DataLoader
+- advanced Autograd graph lifetime
+- DDP
+- Dynamo-like graph capture
+- AOTAutograd-like lowering
+- Inductor-like kernel fusion
 
-## 9. v0.5 从 v0.4 继承什么
+这些内容按照 [`Plan.md`](./Plan.md) 逐版本推进。
 
-以下机制保持稳定：
+## 8. 下一版本：v0.6
 
-- Storage
-- shape / stride / storage_offset
-- view / reshape / contiguous
-- alias semantics
-- version counter
-- inplace safety
-- dynamic backward engine
-- Module / Optimizer / Scheduler
-- Dataset / Sampler / DataLoader
-- MNIST classification stack
-
-Dispatcher 是插入在 Tensor API 与 operator implementation 之间的新层。
-
-## 10. 本版本不做什么
-
-- 不实现真实 CUDA
-- 不实现 `.to(device)`
-- 不实现完整 PyTorch DispatchKey taxonomy
-- 不实现 Tensor subclass dispatch
-- 不实现 functionalization
-- 不实现 Conv2d
-- 不实现 DDP
-- 不实现 compiler
-
-## 11. 下一版本
-
-`v0.6` 将利用 Dispatcher 承载更复杂的神经网络算子：
+下一步不应该直接跳到 CUDA，而是先利用刚完成的 Dispatcher 承载更复杂的神经网络 operator：
 
 ```text
-Conv2d
+Conv2d reference kernel
+       ↓
+Dispatcher registration
+       ↓
+Autograd wrapper
+       ↓
+Conv2d backward
+       ↓
 MaxPool2d
 Dropout
 BatchNorm
+       ↓
 CNN MNIST
 ```
 
-而不是重新把这些逻辑硬编码回 Tensor。
+这样可以验证 v0.5 的 Operator/Dispatcher 架构是否真的能承载非平凡算子，而不只是 `add/mul` demo。
 
-详细版本边界见 [`version.md`](./version.md)，Dispatcher 深度讲解见 [`docs/DISPATCHER.md`](./docs/DISPATCHER.md)。
+## 9. 项目开发规则
+
+继续开发前先阅读：
+
+```text
+Agents.md
+Plan.md
+version.md
+```
+
+核心原则始终是：
+
+> **main 保持最新；版本分支保持可学习；每个版本只引入一个主要架构 mental model。**
