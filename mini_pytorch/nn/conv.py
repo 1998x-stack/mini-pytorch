@@ -6,6 +6,7 @@ import numpy as np
 
 from .module import Module, Parameter
 from .. import functional as F
+from ..runtime.rng import uniform
 from ..tensor import Tensor
 
 
@@ -57,7 +58,7 @@ class Conv2d(Module):
         k_h, k_w = self.kernel_size
         bound = 1.0 / math.sqrt(self.in_channels * k_h * k_w)
         self.weight = Parameter(
-            np.random.uniform(
+            uniform(
                 -bound,
                 bound,
                 size=(self.out_channels, self.in_channels, k_h, k_w),
@@ -65,7 +66,7 @@ class Conv2d(Module):
         )
         if bias:
             self.bias = Parameter(
-                np.random.uniform(-bound, bound, size=(self.out_channels,))
+                uniform(-bound, bound, size=(self.out_channels,))
             )
         else:
             self.register_parameter("bias", None)
