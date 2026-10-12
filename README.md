@@ -1,360 +1,534 @@
-# mini-pytorch — Architecture-Driven PyTorch Learning Project
+# mini-pytorch v0.8 — Advanced Autograd Engine
 
-> 用可运行的 Python/NumPy 代码，一层一层拆开 PyTorch 的核心机制。
+> 把 `backward()` 从 Tensor 内部的一段 DFS，升级成一个有显式生命周期、hook 与 retained-gradient 语义的 Autograd Engine。
 
-**Latest integrated version:** `v0.7.0`
+**Package version:** `0.8.0`
 
-**Current main milestone:** Device / Backend abstraction
+**Validated release-candidate baseline:** `123/123 tests passed`
 
-**Next milestone:** `v0.8` Advanced Autograd Engine
+## 1. 本版本解决什么问题
 
-mini-pytorch 不追求复制完整 PyTorch API，而是按照架构依赖顺序回答：
-
-```text
-Tensor 是什么？
-      ↓
-Autograd 为什么能 backward？
-      ↓
-Module / Parameter / Optimizer 如何组织训练状态？
-      ↓
-Dataset / Sampler / DataLoader 为什么拆开？
-      ↓
-Storage / stride / view 为什么重要？
-      ↓
-operator 为什么需要 Dispatcher？
-      ↓
-Conv2d 等复杂 NN operator 如何建立在 Dispatcher 上？
-      ↓
-Tensor 到底住在哪里，backend 如何拥有 allocation？
-      ↓
-Autograd engine 如何管理 graph lifetime / hooks / repeated backward？
-```
-
-## 1. 版本学习地图
-
-| Version | 核心主题 | 最重要的问题 |
-|---|---|---|
-| `v0.1` | Tensor + Dynamic Autograd | `backward()` 如何自动求导？ |
-| `v0.2` | Optimizer + LR Scheduler | 优化状态为什么独立于模型？ |
-| `v0.3` | Dataset + Sampler + DataLoader + MNIST | 数据为什么拆成 storage / sampling / batching？ |
-| `v0.4` | Storage + stride + views + version counter | Tensor 为什么不等于 ndarray？ |
-| `v0.5` | Operator Schema + Dispatcher + Redispatch | 一个 `x + y` 为什么需要路由层？ |
-| `v0.6` | Conv2d / Pooling / Dropout / BatchNorm | 复杂 NN operator 如何复用 Dispatcher？ |
-| `v0.7` | Device / Backend | 多 backend 为什么不能靠散落的 `if device`？ |
-| `v0.8` | Advanced Autograd Engine | graph lifetime / hooks / retain_graph 如何工作？ |
-
-每个历史版本 branch 都有：
+v0.7 已经把 Tensor placement 拆成：
 
 ```text
-README.md   → 本版本学习入口
-version.md  → 与上一版的精确 delta
-Agents.md   → 本版本工程约束
+Tensor / Storage / Device / Backend / Dispatcher
 ```
 
-## 2. 当前 main 完整架构
+v0.8 继续回答：
+
+> 动态计算图在 backward 时到底是谁执行、哪些梯度只是临时值、哪些梯度要永久保存、图什么时候释放、为什么第二次 backward 会报错？
+
+核心结构：
 
 ```text
-                             Tensor
-                shape / stride / dtype / device
-                               │
-                               ▼
-                             Storage
-              backend-owned allocation + version
-                               │
-                               ▼
-                        logical operator
-                               │
-                               ▼
-                     Operator Schema
-                               │
-                               ▼
-                           Dispatcher
-                  policy keys + backend keys
-             ┌─────────────────┼─────────────────┐
-             ▼                 ▼                 ▼
-          Autograd           NoGrad          CPU / EDU
-             │                                   │
-             └────────── redispatch ─────────────┘
-                               │
-                               ▼
-                         numerical kernel
-                               │
-                               ▼
-                         Tensor / GradFn
-
-nn.Module → functional NN op ─────────────────► Dispatcher
-
-Dataset → Sampler → BatchSampler → DataLoader → Tensor batches
-
-Module / Parameter → Optimizer → LR Scheduler
+forward Tensor graph
+        ↓
+  GradFn / Context
+        ↓
+   AutogradEngine
+ ┌──────┼───────────────┐
+ ▼      ▼               ▼
+VJP   graph lifetime   hooks
+ │    retain_graph      │
+ ▼                      ▼
+leaf grad        retained non-leaf grad
 ```
 
-`EDU` 是 v0.7 的模拟教育 backend：拥有独立 Device / Backend / DispatchKey，但底层仍使用 NumPy host memory，从而可以在普通 CI 上验证多 backend 架构。它不是 CUDA，也不代表 GPU 加速。
+## 2. 相比 v0.7 的核心变化
 
-## 3. v0.7 最新能力
+v0.7：
 
-### Device 是一等值对象
+```text
+Tensor.backward()
+    ↓
+Tensor 内部 DFS
+    ↓
+直接执行 Function.backward
+```
+
+v0.8：
+
+```text
+Tensor.backward()
+    ↓
+AutogradEngine.backward()
+    ↓
+构建 topology
+    ↓
+检查 graph availability
+    ↓
+local gradient accumulation
+    ↓
+hooks
+    ↓
+retain_grad / leaf grad
+    ↓
+Function.backward VJP
+    ↓
+release or retain graph
+```
+
+因此 `Tensor.backward()` 现在只是用户入口，执行策略属于 Engine。
+
+## 3. Graph lifetime
+
+默认：
 
 ```python
-from mini_pytorch import Device, Tensor
-
-cpu = Device("cpu")
-edu = Device("edu")
-
-x = Tensor([1, 2, 3], device=edu)
-print(x.device)
-# edu
+loss.backward()
 ```
 
-### Storage 由 backend 拥有
+成功后会释放所有可达 `Context` 的 backward-only 状态：
 
 ```text
-Storage
-├── Device
-├── Backend
-├── backend-owned allocation
-└── VersionCounter
+saved_tensors
+saved versions
+forward input references
 ```
 
-当前 backend registry：
+Tensor 本身的数据和 graph structural references 仍然存在，但 Context 被标记为 released。
 
-```text
-cpu → NumPyBackend
-edu → EducationalBackend
-```
-
-### Tensor.to(device)
+所以：
 
 ```python
-x = Tensor([1.0, 2.0], requires_grad=True)
-y = x.to("edu")
+loss.backward()
+loss.backward()
 ```
 
-语义：
+第二次会明确报错。
 
-```text
-same device + copy=False → return self
-same device + copy=True  → new Storage
-cross-device             → new target Storage
-```
+这解释了真实 PyTorch 中“Trying to backward through the graph a second time”背后的生命周期概念。
 
-跨设备 transfer 按逻辑值复制，因此断开 Storage alias；但在 grad mode 下通过 CopyBackward 保持梯度链路。
-
-### Device-aware Dispatcher
-
-```text
-CPU + grad  → {Autograd, CPU}
-EDU + grad  → {Autograd, EDU}
-CPU no_grad → {NoGrad, CPU}
-EDU no_grad → {NoGrad, EDU}
-```
-
-因此 Autograd 仍是 policy layer，backend identity 在 redispatch 之后继续存在。
-
-### Mixed-device protection
+## 4. `retain_graph=True`
 
 ```python
-Tensor([1.0], device="cpu") + Tensor([2.0], device="edu")
+loss.backward(retain_graph=True)
+loss.backward()
 ```
 
-会在 backend math 前明确报 device mismatch，而不是偷偷复制。
+第一次保留 Context；第二次继续使用并在最后释放。
 
-### Module.to(device)
-
-```python
-model = nn.Sequential(
-    nn.Conv2d(1, 8, 3),
-    nn.BatchNorm2d(8),
-)
-
-model.to("edu")
-```
-
-会递归迁移：
+注意：
 
 ```text
-Parameters
-Buffers
-child Modules
+retain_graph
+!=
+zero_grad
 ```
 
-同时保持 Parameter 对象和注册关系。
+`retain_graph` 控制**图状态能否再次执行**；`.grad` 是否累加是另一件事。
 
-## 4. 从零阅读源码的推荐顺序
+例如两次 backward 后 leaf gradient 会继续累加，除非你显式清零。
 
-### v0.1 — Autograd
+## 5. Engine-local gradient vs `Tensor.grad`
+
+v0.8 明确区分：
+
+```text
+local_grads
+```
+
+和：
+
+```text
+Tensor.grad
+```
+
+### Engine local gradient
+
+只在一次 backward 内存在：
+
+```text
+local_grads[id(tensor)] -> ndarray
+```
+
+用于 shared-node 梯度合并和 backward 传播。
+
+### Persistent Tensor.grad
+
+默认只有 leaf Tensor 会持久化 `.grad`。
+
+这两个状态不应该混成一个概念。
+
+## 6. Non-leaf `retain_grad()`
+
+默认：
+
+```python
+x = Tensor([2.0, 3.0], requires_grad=True)
+hidden = x * x
+hidden.sum().backward()
+
+print(hidden.grad)
+# None
+```
+
+因为 `hidden` 是 non-leaf。
+
+现在可以：
+
+```python
+hidden.retain_grad()
+```
+
+之后：
+
+```text
+Engine local gradient
+      ↓
+copy/accumulate
+      ↓
+hidden.grad
+```
+
+这非常适合调试中间层梯度。
+
+## 7. Gradient hooks
+
+现在支持：
+
+```python
+handle = tensor.register_hook(fn)
+handle.remove()
+```
+
+hook pipeline：
+
+```text
+incoming gradient
+      ↓
+hook 1
+      ↓
+hook 2
+      ↓
+...
+      ↓
+Tensor.grad accumulation
+      ↓
+Function.backward
+```
+
+hook 可以只观察：
+
+```python
+def observe(grad):
+    print(grad)
+```
+
+也可以返回新的 gradient：
+
+```python
+def halve(grad):
+    return grad * 0.5
+```
+
+返回值会继续参与上游梯度传播。
+
+v0.8 约束：
+
+- hooks 按注册顺序执行；
+- hook 输入是 defensive copy；
+- 返回 `None` 表示不修改；
+- replacement shape 必须一致；
+- 如果返回 Tensor，它的 device 必须一致；
+- handle.remove() 可重复调用。
+
+## 8. Shared-node accumulation
+
+例如：
+
+```python
+shared = x * x
+loss = (shared + shared).sum()
+```
+
+不是一棵树，而是 DAG：
+
+```text
+        shared
+       /      \
+      /        \
+     +----------+
+          ↓
+         sum
+```
+
+Engine 会先合并来自两个 consumer 的梯度：
+
+```text
+left grad + right grad
+        ↓
+local_grads[shared]
+        ↓
+shared backward 只执行一次
+```
+
+这比递归“拿到梯度就立即往父节点传”更接近真正 Autograd Engine 的思维方式。
+
+## 9. Custom `Function`
+
+v0.8 正式把：
+
+```python
+Function
+Context
+```
+
+作为公开教学接口。
+
+示例：
+
+```python
+class SquarePlusOne(Function):
+    @staticmethod
+    def forward(ctx, x):
+        ctx.save_for_backward(x)
+        return x * x + 1.0
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (x,) = ctx.saved_tensors
+        return (grad_output * 2.0 * x,)
+```
+
+调用：
+
+```python
+y = SquarePlusOne.apply(x)
+```
+
+它不会走特殊路径，而是完全复用：
+
+```text
+Function.apply
+    ↓
+Context + GradFn
+    ↓
+AutogradEngine
+```
+
+并自动获得：
+
+- saved-version safety；
+- graph lifetime；
+- retain_graph；
+- CPU/EDU placement preservation。
+
+## 10. Saved-version safety 仍然有效
+
+v0.4 的 inplace version counter 没有被 v0.8 重构破坏。
+
+Forward：
+
+```text
+save Tensor for backward
+      ↓
+remember Storage.version
+```
+
+alias inplace mutation：
+
+```text
+version N -> N+1
+```
+
+Backward 在执行公式前：
+
+```text
+Context.check_saved_versions()
+```
+
+发现不一致立即报错。
+
+因此：
+
+```text
+graph lifetime
+```
+
+和：
+
+```text
+inplace safety
+```
+
+是两个正交机制。
+
+## 11. CPU / EDU 行为保持一致
+
+Autograd Engine 不包含：
+
+```python
+if device == "cpu": ...
+if device == "edu": ...
+```
+
+因此同样的 graph lifetime、hook、retain_grad、retain_graph 语义可以运行在：
+
+```text
+CPU graph
+EDU graph
+CPU -> EDU transfer graph
+```
+
+Device/Backend 仍由 v0.7 的 Storage + Dispatcher 体系负责。
+
+## 12. 为什么不实现假的 `create_graph=True`
+
+当前 backward 公式返回：
+
+```text
+np.ndarray
+```
+
+而不是：
+
+```text
+Tensor
+```
+
+因此 backward 本身不会形成新的计算图。
+
+真正二阶导数需要：
+
+```text
+backward formulas
+    ↓
+Tensor operators
+    ↓
+new GradFn graph
+    ↓
+second backward
+```
+
+所以本版本调用：
+
+```python
+loss.backward(create_graph=True)
+```
+
+会明确：
+
+```text
+NotImplementedError
+```
+
+而不是假装支持 higher-order gradients。
+
+## 13. 新增核心文件
+
+```text
+mini_pytorch/autograd_engine.py
+tests/test_autograd_engine.py
+docs/AUTOGRAD_ENGINE.md
+examples/11_autograd_engine.py
+```
+
+重点修改：
 
 ```text
 mini_pytorch/autograd.py
 mini_pytorch/tensor.py
-mini_pytorch/ops.py
-mini_pytorch/nn/module.py
+mini_pytorch/__init__.py
+pyproject.toml
 ```
 
-### v0.2 — Optimization
+## 14. 推荐阅读顺序
 
 ```text
-mini_pytorch/optim/optimizer.py
-mini_pytorch/optim/sgd.py
-mini_pytorch/optim/adam.py
-mini_pytorch/optim/lr_scheduler.py
-```
-
-### v0.3 — Data pipeline
-
-```text
-mini_pytorch/data/dataset.py
-mini_pytorch/data/sampler.py
-mini_pytorch/data/dataloader.py
-mini_pytorch/data/mnist.py
-examples/06_mnist_mlp.py
-```
-
-### v0.4 — Tensor memory model
-
-```text
-mini_pytorch/storage.py
-mini_pytorch/tensor.py
-docs/TENSOR_MEMORY.md
-examples/07_tensor_memory.py
-```
-
-### v0.5 — Dispatcher
-
-```text
-mini_pytorch/dispatcher.py
-mini_pytorch/operator_registry.py
-mini_pytorch/kernels.py
-docs/DISPATCHER.md
-examples/08_dispatcher.py
-```
-
-### v0.6 — CNN operator stack
-
-```text
-mini_pytorch/kernels.py
-mini_pytorch/nn_ops.py
-mini_pytorch/operator_registry.py
-mini_pytorch/functional.py
-mini_pytorch/nn/conv.py
-mini_pytorch/nn/pooling.py
-mini_pytorch/nn/dropout.py
-mini_pytorch/nn/batchnorm.py
-docs/CNN_OPERATORS.md
-examples/09_cnn_mnist.py
-```
-
-### v0.7 — Device / Backend
-
-```text
-mini_pytorch/device.py
+mini_pytorch/autograd.py
         ↓
-mini_pytorch/backend.py
-        ↓
-mini_pytorch/storage.py
+mini_pytorch/autograd_engine.py
         ↓
 mini_pytorch/tensor.py
         ↓
-mini_pytorch/dispatcher.py
+tests/test_autograd_engine.py
         ↓
-mini_pytorch/operator_registry.py
+docs/AUTOGRAD_ENGINE.md
         ↓
-mini_pytorch/nn/module.py
-        ↓
-tests/test_device_backend.py
-        ↓
-docs/DEVICE_BACKEND.md
-        ↓
-examples/10_device_backend.py
+examples/11_autograd_engine.py
 ```
 
-## 5. 快速运行
+## 15. 快速运行
 
-Python 3.10+：
+安装：
 
 ```bash
 pip install -e .
+```
+
+完整测试：
+
+```bash
 python -m unittest discover -s tests -v
 ```
 
-当前集成基线：
+当前 release-candidate 基线：
 
 ```text
-103 tests
+123 tests
 OK
 ```
 
-运行 Device / Backend 示例：
+运行教学示例：
 
 ```bash
-python examples/10_device_backend.py
+python examples/11_autograd_engine.py
 ```
 
-运行 Dispatcher 示例：
+## 16. v0.8 新增测试覆盖
 
-```bash
-python examples/08_dispatcher.py
-```
+新增 20 个 Autograd Engine tests，覆盖：
 
-运行 CNN MNIST 教学规模：
+- default graph release；
+- repeated backward error；
+- retain_graph reuse；
+- shared-node release；
+- CPU/EDU lifetime parity；
+- non-leaf default grad behavior；
+- retain_grad；
+- retained-grad accumulation；
+- hook observe；
+- hook transform；
+- hook ordering；
+- removable handle；
+- invalid hook shape；
+- hook Tensor device mismatch；
+- custom Function；
+- custom Function version safety；
+- custom Function EDU placement；
+- Tensor gradient seed device check；
+- create_graph explicit boundary。
 
-```bash
-python examples/09_cnn_mnist.py \
-  --epochs 2 \
-  --train-limit 1000 \
-  --test-limit 300 \
-  --implementation im2col
-```
+旧 103 个测试同时全部通过。
 
-## 6. 当前明确限制
+## 17. Explicit non-goals
 
-截至 v0.7，项目刻意还没有：
+v0.8 不实现：
 
-- real CUDA / CuPy；
-- async device copy；
-- pinned memory；
-- streams/events；
-- mixed precision；
-- caching allocator；
-- grouped/depthwise Conv2d beyond current boundary；
-- distributed training；
-- graph capture；
-- compiler lowering/fusion。
+- true second derivatives；
+- full `create_graph=True`；
+- forward-mode AD；
+- parallel Autograd workers；
+- anomaly detection；
+- stream-aware CUDA engine；
+- DDP gradient buckets；
+- compiler graph capture。
 
-这些由后续版本按依赖顺序引入。
+## 18. 下一版本
 
-## 7. 为什么下一版是 Advanced Autograd
-
-现在框架已经具备：
+下一版 `v0.9` 将进入 **Training Runtime / Serialization / Reproducibility**：
 
 ```text
-Tensor memory identity
-        +
-operator routing
-        +
-NN operators
-        +
-device/backend placement
+model state
+optimizer state
+scheduler state
+RNG state
+epoch / global step
+      ↓
+unified checkpoint
+      ↓
+deterministic resume
 ```
 
-但当前 Autograd engine 仍然非常朴素：graph 构建后长期留在对象上，non-leaf grad 不保留，没有 hooks，也没有 `retain_graph` 的 graph lifecycle。
-
-因此 v0.8 应开始回答：
-
-```text
-forward graph
-    ↓
-backward traversal
-    ↓
-什么时候释放 saved state？
-    ↓
-为什么第二次 backward 会失败？
-    ↓
-retain_graph=True 保留了什么？
-    ↓
-non-leaf retain_grad() 怎么实现？
-    ↓
-gradient hook 在什么时机执行？
-```
-
-详细任务见 `Plan.md`。
+它会建立在 v0.8 已经明确的 graph/runtime 边界之上。
