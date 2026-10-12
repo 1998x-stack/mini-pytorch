@@ -65,3 +65,4 @@ class SGD(Optimizer):
                     grad = grad + momentum * buf if nesterov else buf
 
                 p.data -= lr * grad
+                p._mark_dirty()
