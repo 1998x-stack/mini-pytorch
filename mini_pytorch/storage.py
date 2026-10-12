@@ -1,14 +1,13 @@
-"""Explicit tensor storage and layout helpers for mini-pytorch v0.4.
-
-A Storage owns a flat contiguous allocation. Tensor objects may share one Storage
-while exposing different shapes, strides and storage offsets.
-"""
+"""Explicit tensor storage, layout helpers and backend identity."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable
 
 import numpy as np
+
+from .backend import Backend, backend_for
+from .device import Device, as_device
 
 
 @dataclass
@@ -36,15 +35,37 @@ def contiguous_strides(shape: Iterable[int]) -> tuple[int, ...]:
 
 
 class Storage:
-    """A flat contiguous allocation shared by one or more Tensor views."""
+    """A flat backend-owned allocation shared by one or more Tensor views."""
 
-    def __init__(self, data, *, copy: bool = True) -> None:
+    def __init__(
+        self,
+        data,
+        *,
+        copy: bool = True,
+        device: Device | str = "cpu",
+    ) -> None:
+        self._device = as_device(device)
+        self._backend: Backend = backend_for(self._device)
         array = np.asarray(data)
-        if not array.flags.c_contiguous:
-            array = np.ascontiguousarray(array)
-        flat = array.reshape(-1)
-        self._array = flat.copy() if copy else flat
+        self._array = self._backend.from_numpy(array, copy=copy)
         self._version_counter = VersionCounter()
+
+    @classmethod
+    def empty(cls, size: int, dtype, *, device: Device | str = "cpu") -> "Storage":
+        obj = cls.__new__(cls)
+        obj._device = as_device(device)
+        obj._backend = backend_for(obj._device)
+        obj._array = obj._backend.allocate(int(size), dtype)
+        obj._version_counter = VersionCounter()
+        return obj
+
+    @property
+    def device(self) -> Device:
+        return self._device
+
+    @property
+    def backend(self) -> Backend:
+        return self._backend
 
     @property
     def dtype(self):
@@ -65,15 +86,25 @@ class Storage:
     def bump_version(self) -> int:
         return self._version_counter.bump()
 
-    def numpy(self) -> np.ndarray:
-        """Return the flat allocation. Mutating this bypasses version tracking."""
-        return self._array
+    def numpy(self, *, copy: bool = False) -> np.ndarray:
+        """Expose the flat allocation through the backend's NumPy bridge.
+
+        Mutating a non-copy result bypasses version tracking and is therefore a
+        low-level educational escape hatch.
+        """
+
+        return self._backend.to_numpy(self._array, copy=copy)
+
+    def clone_to(self, device: Device | str) -> "Storage":
+        target = as_device(device)
+        logical = self._backend.to_numpy(self._array, copy=True)
+        return Storage(logical, copy=True, device=target)
 
     def __len__(self) -> int:
         return self.size
 
     def __repr__(self) -> str:
         return (
-            f"Storage(size={self.size}, dtype={self.dtype}, "
+            f"Storage(size={self.size}, dtype={self.dtype}, device={self.device}, "
             f"version={self.version})"
         )
