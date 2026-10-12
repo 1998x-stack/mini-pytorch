@@ -1,8 +1,8 @@
 """Autograd building blocks.
 
-v0.4 adds saved-tensor version checks: when backward depends on an input value,
-the Context remembers that Tensor's shared Storage version. Mutating any alias
-through a tracked inplace Tensor operation invalidates backward.
+v0.4 adds saved-tensor version checks. v0.7 keeps Function.apply device-aware
+so direct educational operators preserve a common input device and reject
+mixed-device positional Tensor inputs before numerical work.
 """
 from __future__ import annotations
 
@@ -99,6 +99,11 @@ class Function:
 
         if not all(isinstance(x, Tensor) for x in inputs):
             raise TypeError("Function.apply expects Tensor positional inputs")
+
+        devices = {x.device for x in inputs}
+        if len(devices) > 1:
+            rendered = ", ".join(sorted(str(device) for device in devices))
+            raise ValueError(f"Function.apply received tensors on different devices: {rendered}")
 
         ctx = Context()
         raw_inputs = tuple(x.data for x in inputs)
