@@ -1,246 +1,201 @@
-# Agents.md — mini-pytorch Development Contract
+# Agents.md — mini-pytorch v0.6 Development Contract
 
-> **Mandatory for every future iteration:** read this file before changing code, tests, documentation, branches, version scope, or architecture.
->
-> This is the canonical engineering contract for `main`. Version branches carry their own branch-specific `Agents.md`.
+> Read this file before modifying the `v0.6` branch.
 
-## 1. Repository mission
+## Branch identity
 
-mini-pytorch is an educational, NumPy-first framework for understanding the mechanisms behind real PyTorch.
+- Branch: `v0.6`
+- Previous version: `v0.5`
+- Primary mental model: **neural-network operator stack / CNN built on Dispatcher**
+- Status: active until the v0.6 Definition of Done is satisfied, then frozen
 
-Priorities:
+## 1. Scope rule
+
+v0.6 teaches one architectural transition:
 
 ```text
-architectural clarity
-      ↓
-correctness + explicit invariants
-      ↓
-readable reference implementation
-      ↓
-tests that demonstrate mechanisms
-      ↓
-conceptual mapping to PyTorch
-      ↓
-performance only after the model is clear
+Module API
+   ↓
+functional operator
+   ↓
+Dispatcher
+   ↓
+Autograd wrapper
+   ↓ redispatch
+CPU numerical kernel
 ```
 
-The project does not optimize for API completeness or for copying upstream PyTorch source code.
+The primary scope is:
+
+- Conv2d
+- MaxPool2d
+- Dropout
+- BatchNorm1d / BatchNorm2d
+- CNN MNIST integration
+
+Do not turn v0.6 into a general device/backend release.
 
 ## 2. Mandatory reading order
 
-### On `main`
-
-Read:
+Before code changes, read:
 
 1. `Agents.md`
-2. `Plan.md`
-3. `version.md`
-4. architecture docs relevant to the subsystem
-5. tests for that subsystem
-6. current implementation
+2. `version.md`
+3. `docs/DISPATCHER.md`
+4. `mini_pytorch/dispatcher.py`
+5. `mini_pytorch/operator_registry.py`
+6. `mini_pytorch/kernels.py`
+7. relevant `nn/*`, tests and examples
 
-### On a version branch
+## 3. Conv2d architecture contract
 
-Read:
-
-1. branch `Agents.md`
-2. branch `version.md`
-3. relevant docs/tests/source
-
-Never assume a historical branch should contain a later-version feature.
-
-## 3. Branch invariant
-
-`main` must always be the newest integrated, validated state.
-
-Correct lifecycle:
+Required call path:
 
 ```text
-latest main
-   ↓
-create vX.Y
-   ↓
-implement one major mental model
-   ↓
-full tests + docs + example
-   ↓
-exact branch-head CI green
-   ↓
-freeze version branch
-   ↓
-integrate validated tree to main
-   ↓
-restore canonical main docs
+nn.Conv2d.forward
+      ↓
+functional.conv2d
+      ↓
+aten::conv2d.default
+      ↓
+Dispatcher
+      ↓
+Autograd wrapper when needed
+      ↓ redispatch
+CPU Conv2d kernel
 ```
 
-Forbidden:
+Forbidden shortcuts:
+
+- putting convolution loops directly in `nn.Conv2d.forward`;
+- bypassing Dispatcher for the main Conv2d implementation;
+- embedding Autograd graph policy in the CPU kernel;
+- adding device-specific branches in `Tensor`.
+
+## 4. Reference-first performance rule
+
+Implementation order:
 
 ```text
-active/frozen version contains newer validated framework code
-main remains stale
+readable nested-loop Conv2d
+        ↓
+correctness + gradient tests
+        ↓
+im2col implementation
+        ↓
+reference/im2col equivalence
+        ↓
+optional benchmark
 ```
 
-## 4. One version = one major mental model
+Keep both paths. The readable reference implementation is part of the learning artifact.
 
-Current learning sequence:
+## 5. Supported Conv2d surface
+
+v0.6 should support:
+
+- NCHW input
+- OIHW weights
+- optional bias represented through the functional/module API
+- integer or pair `kernel_size`
+- integer or pair `stride`
+- integer or pair `padding`
+- integer or pair `dilation`
+- `groups=1`
+
+If `groups != 1`, raise a clear error. Do not silently pretend grouped convolution is supported.
+
+## 6. Pooling contract
+
+MaxPool2d should:
+
+- route through Dispatcher;
+- preserve NCHW shape reasoning;
+- define deterministic tie behavior through NumPy first-max semantics;
+- route backward gradient only to selected maxima;
+- expose kernel size / stride / padding.
+
+## 7. Dropout contract
+
+Dropout should demonstrate policy rather than backend complexity:
+
+- training randomly masks elements;
+- surviving activations scale by `1/(1-p)`;
+- eval is identity;
+- deterministic tests must be possible with a seed;
+- no generated masks/checkpoints are committed.
+
+## 8. BatchNorm contract
+
+BatchNorm must make Parameter vs Buffer visible:
 
 ```text
-v0.1  Tensor / Dynamic Autograd
-v0.2  Optimizer state / LR Scheduler
-v0.3  Dataset / Sampler / DataLoader / MNIST
-v0.4  Storage / stride / views / inplace version safety
-v0.5  Operator Registry / Dispatcher / Redispatch
-v0.6  Neural-network operator stack / CNN        ← next
+weight / bias        → Parameters
+running_mean / var   → Buffers
 ```
 
-Features that do not serve the current version's mental model should be deferred to `Plan.md`.
+Requirements:
 
-## 5. Architecture rules
+- training uses batch statistics;
+- evaluation uses running statistics when tracking is enabled;
+- affine parameters are optional;
+- running statistics participate in `state_dict()` but not `parameters()`;
+- running-stat updates are tracked framework mutations.
 
-Preferred dependency direction:
+## 9. Testing contract
 
-```text
-Tensor / Storage
-      │
-      ▼
-Operator Schema / Dispatcher
-      │
- ┌────┴───────────┐
- ▼                ▼
-Backend kernels  Autograd wrappers
-      │                │
-      └──────┬─────────┘
-             ▼
-            nn
-             │
-             ▼
-           optim
+Before freeze, tests must cover:
 
-Dataset / Sampler / DataLoader
-             │
-             └──────────► training runtime
-```
+- Conv2d forward reference values;
+- Conv2d shape validation;
+- Conv2d input/weight/bias finite-difference gradients;
+- Dispatcher route `Autograd → CPU`;
+- im2col/reference equivalence;
+- MaxPool2d forward/backward;
+- Dropout train/eval and deterministic seed behavior;
+- BatchNorm train/eval, parameter/buffer distinction, state_dict;
+- one CNN end-to-end forward/backward/optimizer step;
+- complete regression suite.
 
-Rules:
-
-- separate policy from mechanism;
-- avoid circular core imports;
-- CPU/backend kernels should not know Module/Optimizer/DataLoader;
-- Autograd policy should not be duplicated inside every backend kernel;
-- preserve Storage/stride/view invariants while extending operators;
-- do not scatter device-specific `if` statements through Tensor before the device/backend version.
-
-## 6. Conceptual PyTorch compatibility
-
-Prefer PyTorch-like boundaries when they improve transfer of understanding:
-
-- TensorImpl-like Storage + sizes + strides + storage offset;
-- dynamic Autograd Functions/Nodes;
-- Module parameters and buffers;
-- Optimizer parameter groups/state;
-- Dataset/Sampler/DataLoader separation;
-- operator schema + Dispatcher + DispatchKey;
-- redispatch from wrappers to backend kernels;
-- later: Conv2d, device/backend, DDP and compiler stack.
-
-Implement original educational equivalents. Do not copy upstream source.
-
-## 7. Testing contract
-
-Every new subsystem should include, as applicable:
-
-- happy path;
-- invariant/property tests;
-- error-path tests;
-- numerical/reference validation;
-- integration test.
-
-Full regression command:
+Full command:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-Never claim a version is validated unless the exact code being reported has actually passed the relevant test suite. Before freeze, GitHub Actions must pass on the exact final version-branch head.
+Exact final v0.6 branch-head GitHub Actions must be green before freeze.
 
-## 8. Documentation contract
+## 10. Documentation contract
 
-When architecture or public API changes, review at minimum:
+v0.6 must include/update:
 
-```text
-version.md
-README.md
-Agents.md
-relevant docs/*
-relevant example
-Plan.md on main when version sequencing changes
-```
+- `README.md`
+- `version.md`
+- `Agents.md`
+- `docs/CNN_OPERATORS.md`
+- `examples/09_cnn_mnist.py`
+- package version
 
-Every version README must state:
+## 11. Explicit non-goals
 
-- version theme;
-- delta from previous version;
-- important source files;
-- recommended reading order;
-- quick run commands;
-- explicit non-goals;
-- next version.
+Do not add in v0.6:
 
-## 9. Historical branch rule
+- CUDA execution
+- `.to(device)`
+- distributed training
+- graph compiler work
+- ConvTranspose
+- full grouped/depthwise convolution
+- mixed precision
+- production-grade kernel selection/autotuning
 
-A frozen version branch may receive only:
+## 12. Freeze rule
 
-- documentation corrections;
-- tests that correct the version's own promised behavior;
-- narrowly scoped bug fixes within that version's scope.
+When all v0.6 acceptance criteria pass:
 
-Do not backport future subsystems merely for convenience.
-
-## 10. Performance rule
-
-Prefer:
-
-```text
-readable reference
-   ↓
-correctness
-   ↓
-profile
-   ↓
-optimized educational path
-```
-
-Examples:
-
-- readable Conv2d loops before im2col optimization;
-- eager kernels before fusion;
-- simple synchronization before DDP buckets.
-
-## 11. Generated artifacts and dependencies
-
-Do not commit generated datasets, logs, plots or checkpoints unless a tiny deterministic fixture is explicitly required by tests.
-
-NumPy remains the default reference backend until the device/backend version explicitly introduces another backend.
-
-## 12. Definition of Done for a version
-
-A version can be frozen only when:
-
-- primary mental model is explicit;
-- promised implementation is complete;
-- unit/invariant/error tests pass;
-- numerical/reference checks exist where relevant;
-- educational integration example exists;
-- `version.md` accurately records the delta;
-- version-specific `Agents.md` exists;
-- architecture docs are updated;
-- package imports cleanly;
-- exact final branch-head CI is green;
-- validated state is integrated into `main`;
-- next version dependency rationale is recorded in `Plan.md`.
-
-## 13. Current main directive
-
-`main` currently contains the completed v0.5 Dispatcher milestone.
-
-The next branch must be created from current `main` and follow `Plan.md`. The next planned architectural milestone is **v0.6: neural-network operator stack / CNN**, using the Dispatcher introduced in v0.5 rather than bypassing it.
+1. change `version.md` status to frozen;
+2. make README identify a frozen v0.6 snapshot;
+3. run CI on the exact final branch head;
+4. integrate the validated v0.6 tree into `main`;
+5. restore canonical `main/Agents.md` and project README;
+6. advance `main/Plan.md` to v0.7 Device / Backend.
