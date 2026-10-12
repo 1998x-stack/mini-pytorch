@@ -72,7 +72,7 @@ class TestBuiltinDispatch(unittest.TestCase):
         self.assertIn("aten::sum.default", names)
         self.assertEqual(
             dispatcher.registered_keys("aten::add.Tensor"),
-            (DispatchKey.AUTOGRAD, DispatchKey.CPU),
+            (DispatchKey.AUTOGRAD, DispatchKey.EDU, DispatchKey.CPU),
         )
 
     def test_non_grad_tensor_selects_cpu(self):
