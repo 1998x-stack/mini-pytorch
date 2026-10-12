@@ -4,11 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mini-pytorch-learning"
-version = "0.2.0"
-description = "A small, extensible PyTorch-like framework for learning autograd, nn.Module, and optimizers"
+version = "0.3.0"
+description = "A small, extensible PyTorch-like framework for learning autograd, neural networks, optimizers, data loading, and training loops"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24"]
+dependencies = [
+  "numpy>=1.24",
+  "loguru>=0.7",
+  "matplotlib>=3.7",
+]
 
 [tool.setuptools.packages.find]
 include = ["mini_pytorch*"]
