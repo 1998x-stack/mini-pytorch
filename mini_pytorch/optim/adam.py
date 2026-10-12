@@ -70,3 +70,4 @@ class Adam(Optimizer):
                 bias_correction2 = 1 - beta2 ** t
                 step_size = lr * math.sqrt(bias_correction2) / bias_correction1
                 p.data -= step_size * m / (np.sqrt(v) + eps)
+                p._mark_dirty()
