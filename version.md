@@ -5,9 +5,9 @@
 - **Branch:** `v0.9`
 - **Previous version:** `v0.8`
 - **Theme:** Training Runtime / Serialization / Reproducibility
-- **Status:** active development
-- **Target package version:** `0.9.0`
-- **Starting regression baseline:** `123/123 tests passed`
+- **Status:** **frozen historical learning snapshot**
+- **Package version:** `0.9.0`
+- **Validated regression baseline:** **140/140 tests passed**
 
 v0.9 answers:
 
@@ -18,10 +18,14 @@ v0.9 answers:
 v0.8 made backward execution explicit:
 
 ```text
-forward graph → AutogradEngine → optimizer step
+Tensor / GradFn / Context
+        ↓
+AutogradEngine
+        ↓
+Optimizer.step()
 ```
 
-v0.9 makes the training process itself explicit state:
+v0.9 makes the complete training process explicit state:
 
 ```text
 Module state
@@ -32,48 +36,58 @@ Training progress
       ↓
 CheckpointState
       ↓
-validated serialization
+metadata.json + tensors.npz
       ↓
-restore into fresh objects
+fresh objects
+      ↓
+validated restore
       ↓
 deterministic continuation
 ```
 
-The milestone is not `pickle.dump(model)`. It is an inspectable training-state contract.
+The milestone is training-state architecture, not opaque object dumping.
 
-## 3. Planned mechanisms
+## 3. Implemented mechanisms
 
-### 3.1 Framework RNG
+### Framework RNG
 
-Add a small NumPy-first RNG layer:
+Added:
 
 ```python
-manual_seed(42)
+manual_seed(seed)
 get_rng_state()
 set_rng_state(state)
 ```
 
-A seed initializes a stream; a checkpoint restores the **current RNG stream state**.
+The framework uses one checkpointable NumPy PCG64 stream for framework-owned randomness.
 
-Framework-owned parameter initialization and unseeded stochastic operations should use this stream where practical.
+Integrated with:
 
-### 3.2 TrainingState
+- `Linear` initialization;
+- `Conv2d` initialization;
+- `Dropout(seed=None)`;
+- `RandomSampler(seed=None)`.
 
-Introduce explicit runtime progress:
+Explicitly seeded Dropout/Sampler instances preserve their historical private-generator semantics and are outside automatic framework-RNG checkpoint capture.
+
+### TrainingState
+
+Added explicit runtime progress:
 
 ```text
 epoch
 global_step
 batch_in_epoch
 best_metric
-optional metadata
+run_id
+notes
 ```
 
-v0.9 will guarantee deterministic resume at an explicitly documented boundary rather than pretend every arbitrary DataLoader iterator is resumable.
+Counters validate non-negative integer semantics.
 
-### 3.3 CheckpointState schema
+### CheckpointState
 
-Logical state:
+Logical checkpoint representation:
 
 ```text
 CheckpointState
@@ -87,11 +101,11 @@ CheckpointState
 └── metadata
 ```
 
-No live Parameter/Module objects belong in the serialized payload.
+Checkpoint collection is separate from disk serialization and object restoration.
 
-### 3.4 Inspectable serialization
+### Inspectable serialization
 
-Use a transparent checkpoint directory:
+Checkpoint layout:
 
 ```text
 checkpoint/
@@ -99,137 +113,299 @@ checkpoint/
 └── tensors.npz
 ```
 
-NumPy arrays live in NPZ. JSON stores structure, array references, schema/framework versions and runtime metadata. `pickle` is not the primary format.
+`metadata.json` exposes human-readable top-level format/schema/framework/training fields.
+Nested structures use explicit tagged encoding; ndarray payloads live losslessly in `tensors.npz`.
 
-### 3.5 Restore orchestration
+Supported structure includes:
 
-Loading bytes and restoring training are separate steps.
+- dictionaries with string/integer/simple scalar keys;
+- lists;
+- tuples;
+- NumPy scalar values;
+- ndarrays with dtype/shape preservation.
+
+This is sufficient to preserve optimizer state with positional integer parameter indices and nested moment arrays without pickle.
+
+### Staged publication
+
+Checkpoint writes use a temporary directory, fsync component files, then publish by rename. Existing targets are moved to a temporary backup during overwrite and restored if publication fails.
+
+This is an educational atomic-ish pattern, not a distributed storage protocol.
+
+### Restore orchestration
 
 Restore order:
 
 ```text
-validate schema
-   ↓
-model
-   ↓
-optimizer
-   ↓
-scheduler
-   ↓
-training progress
-   ↓
-RNG last
+validate checkpoint
+      ↓
+model.load_state_dict
+      ↓
+optimizer.load_state_dict
+      ↓
+scheduler.load_state_dict
+      ↓
+TrainingState
+      ↓
+set_rng_state(...) LAST
 ```
 
-Restoring RNG last prevents construction of fresh model/optimizer objects from disturbing future random choices.
+RNG is restored last because construction of fresh model objects may consume random values.
 
-Serialized arrays are device-neutral host values. Loading into a model already placed on CPU/EDU preserves that target placement.
+### Device-neutral checkpoint values
 
-### 3.6 Deterministic resume experiment
+Serialized ndarray values are device-neutral host values.
 
-Central integration proof:
+Restoring into an already configured target Module writes into existing Parameter/Buffer Storage, so target placement is preserved. Tests prove CPU-saved model values can be restored into an EDU model without moving parameters back to CPU.
+
+### Strict compatibility failures
+
+v0.9 explicitly rejects:
+
+- unknown checkpoint schema;
+- missing metadata/tensor files;
+- malformed NPZ archives;
+- model parameter shape mismatch;
+- incompatible optimizer parameter-group structure;
+- checkpoint scheduler state without a target scheduler in strict mode;
+- overwrite when `overwrite=False`.
+
+No silent parameter reshape or required-state dropping is performed.
+
+## 4. Deterministic resume proof
+
+The central integration test uses:
 
 ```text
-Run A: seed S → train 1..N
-Run B: seed S → train 1..K → save → fresh objects → restore → train K+1..N
+Linear
+  ↓
+ReLU
+  ↓
+Dropout(seed=None)
+  ↓
+Linear
+
+Adam + StepLR + framework RNG
 ```
 
-Compare:
-
-- loss continuation;
-- model parameters;
-- optimizer moments/state;
-- scheduler LR/state;
-- TrainingState counters;
-- future framework RNG draws.
-
-## 4. Planned source layout
+Run A:
 
 ```text
-mini_pytorch/runtime/
-├── __init__.py
-├── rng.py
-├── state.py
-└── checkpoint.py
+manual_seed(S)
+→ train steps 1 ... N
+→ record final state + future RNG draws
+```
+
+Run B:
+
+```text
+manual_seed(S)
+→ train steps 1 ... K
+→ save checkpoint
+→ construct fresh model/optimizer/scheduler
+→ restore checkpoint
+→ train K+1 ... N
+→ record final state + future RNG draws
+```
+
+CI proves exact equality of:
+
+- full loss trajectory;
+- model arrays;
+- Adam state arrays/counters;
+- StepLR state/current LR;
+- TrainingState;
+- future framework RNG values.
+
+This is the version's definition of deterministic resume.
+
+## 5. Resume boundary
+
+v0.9 guarantees deterministic resume at controlled step/epoch boundaries using framework-owned RNG state.
+
+`TrainingState.batch_in_epoch` can record position, but v0.9 intentionally does **not** claim restoration of an arbitrary partially-consumed multi-worker DataLoader iterator or external/private random sources.
+
+## 6. New files
+
+```text
+mini_pytorch/runtime/__init__.py
+mini_pytorch/runtime/rng.py
+mini_pytorch/runtime/state.py
+mini_pytorch/runtime/checkpoint.py
 
 tests/test_runtime_checkpoint.py
 docs/TRAINING_RUNTIME.md
 examples/12_checkpoint_resume.py
 ```
 
-Existing Module/Optimizer/Scheduler state APIs should be reused and only strengthened where restore validation needs a missing primitive.
-
-## 5. Compatibility invariants
-
-v0.9 must preserve:
-
-- v0.4 Storage/view/version safety;
-- v0.5 Dispatcher behavior;
-- v0.7 CPU/EDU placement;
-- v0.8 Autograd graph lifecycle/hooks;
-- leaf gradient semantics;
-- existing Optimizer/Scheduler APIs;
-- Dataset/DataLoader/CNN regressions.
-
-Persistence logic must stay out of Tensor numerical kernels and AutogradEngine traversal.
-
-## 6. Required tests
-
-At minimum:
-
-- same framework seed → same random sequence;
-- RNG save/restore → identical continuation;
-- TrainingState validation/round-trip;
-- checkpoint model/optimizer/scheduler round-trip;
-- target device preserved on restore;
-- metadata JSON + tensor NPZ round-trip;
-- unknown schema rejected;
-- missing required section rejected;
-- wrong model shape rejected;
-- optimizer parameter-group mismatch rejected;
-- missing scheduler state rejected when scheduler restore is requested;
-- deterministic uninterrupted vs resumed training equivalence;
-- future RNG draws identical after resume;
-- complete historical suite remains green.
-
-## 7. Explicit non-goals
-
-Do not add in v0.9:
-
-- distributed/sharded checkpoints;
-- remote object-store persistence;
-- async checkpoint writers;
-- exact arbitrary mid-epoch DataLoader worker restoration;
-- DDP/NCCL;
-- compiler graph serialization;
-- cryptographic signing/encryption.
-
-## 8. Definition of Done
-
-Before freezing v0.9:
-
-- [ ] framework RNG state capture/restore implemented
-- [ ] TrainingState implemented
-- [ ] schema-versioned CheckpointState implemented
-- [ ] inspectable JSON + NPZ serialization implemented
-- [ ] model/optimizer/scheduler/RNG/progress restore implemented
-- [ ] strict compatibility failures tested
-- [ ] device restoration rule tested
-- [ ] deterministic resume experiment passes
-- [ ] README/docs/example updated
-- [ ] package version is `0.9.0`
-- [ ] all previous regression tests pass
-- [ ] exact final v0.9 branch-head CI is green
-- [ ] frozen validated tree is integrated into `main`
-
-## 9. Next version
-
-After v0.9, `v0.10` should focus on **Distributed / DDP Concepts**:
+Major modified files:
 
 ```text
-Autograd gradient-ready hook
+mini_pytorch/nn/linear.py
+mini_pytorch/nn/conv.py
+mini_pytorch/nn/dropout.py
+mini_pytorch/data/sampler.py
+mini_pytorch/__init__.py
+pyproject.toml
+README.md
+MANIFEST.txt
+Agents.md
+version.md
+```
+
+## 7. Preserved invariants
+
+v0.9 preserves:
+
+- Storage/stride/view/version-counter semantics;
+- saved-version inplace safety;
+- Dispatcher/redispatch behavior;
+- CPU/EDU placement;
+- AutogradEngine graph lifetime/hooks/retain-grad semantics;
+- Module/Optimizer/Scheduler public state APIs;
+- Dataset/DataLoader/CNN behavior;
+- leaf gradient accumulation.
+
+Checkpoint code does not live inside Tensor math, backend kernels, Dispatcher or AutogradEngine traversal.
+
+## 8. Validation
+
+Validated release-candidate implementation commit:
+
+```text
+45e09013dfecfb86055220c1e3be41928cf7bc7d
+```
+
+GitHub Actions environment:
+
+```text
+Ubuntu 24.04
+Python 3.11.17
+NumPy 2.4.6
+```
+
+Result:
+
+```text
+Ran 140 tests in 0.990s
+OK
+```
+
+This is the previous v0.8 baseline of 123 tests plus 17 dedicated v0.9 runtime/checkpoint tests.
+
+## 9. v0.9-specific test coverage
+
+### RNG
+
+- manual seed reproducibility;
+- RNG-state continuation restore;
+- framework RNG parameter initialization;
+- default Dropout RNG integration;
+- default RandomSampler RNG integration.
+
+### TrainingState
+
+- round-trip;
+- invalid counter errors.
+
+### Serialization
+
+- JSON + NPZ round-trip;
+- top-level metadata inspection;
+- optimizer nested arrays/tuple/integer-key preservation;
+- unknown schema rejection;
+- missing/corrupt file rejection;
+- overwrite protection.
+
+### Restore
+
+- model state;
+- optimizer state;
+- scheduler state;
+- training progress;
+- target EDU device preservation;
+- model shape mismatch;
+- optimizer group mismatch;
+- scheduler-presence strictness.
+
+### Integration
+
+- uninterrupted training vs save/reconstruct/load/continue exact equivalence;
+- exact future RNG continuation.
+
+## 10. Definition of Done
+
+- [x] framework RNG capture/restore implemented
+- [x] framework-owned stochastic mechanisms integrated
+- [x] explicit `TrainingState` implemented
+- [x] schema-versioned `CheckpointState` implemented
+- [x] inspectable JSON + NPZ format implemented
+- [x] staged checkpoint publication implemented
+- [x] model/optimizer/scheduler/RNG/progress restore implemented
+- [x] strict compatibility failures tested
+- [x] target-device preservation tested
+- [x] deterministic resume experiment passes
+- [x] README/docs/example complete
+- [x] package version is `0.9.0`
+- [x] full historical regression passes
+- [x] branch marked frozen pending exact frozen-head CI/integration
+
+## 11. Recommended reading order
+
+```text
+mini_pytorch/runtime/rng.py
         ↓
-DDP reducer / buckets
+mini_pytorch/runtime/state.py
+        ↓
+mini_pytorch/runtime/checkpoint.py
+        ↓
+mini_pytorch/nn/linear.py + conv.py + dropout.py
+        ↓
+mini_pytorch/data/sampler.py
+        ↓
+tests/test_runtime_checkpoint.py
+        ↓
+docs/TRAINING_RUNTIME.md
+        ↓
+examples/12_checkpoint_resume.py
+```
+
+## 12. Explicit non-goals
+
+v0.9 intentionally does not implement:
+
+- arbitrary mid-epoch multi-worker iterator restoration;
+- distributed/sharded checkpointing;
+- async checkpoint writers;
+- object-store/remote persistence;
+- DDP/NCCL state;
+- compiler graph serialization;
+- cryptographic checkpoint signing/encryption.
+
+## 13. Learning goals
+
+After v0.9 the reader should be able to explain:
+
+1. why model weights are not the full training state;
+2. seed vs current RNG stream state;
+3. why optimizer and scheduler state affect future parameters;
+4. why training progress belongs in an explicit runtime object;
+5. state collection vs serialization vs restoration;
+6. why a checkpoint needs a schema version;
+7. why RNG should be restored after fresh object construction;
+8. how device-neutral serialized values can preserve target device placement;
+9. what deterministic resume actually needs to prove.
+
+## 14. Next version
+
+`v0.10` should focus on **Distributed / DDP Concepts**:
+
+```text
+Autograd gradient-ready signal
+        ↓
+DDP reducer
+        ↓
+gradient buckets
         ↓
 ProcessGroup.all_reduce
         ↓
