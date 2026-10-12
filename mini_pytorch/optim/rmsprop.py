@@ -52,3 +52,4 @@ class RMSprop(Optimizer):
                     p.data -= lr * buf
                 else:
                     p.data -= lr * grad / avg
+                p._mark_dirty()
