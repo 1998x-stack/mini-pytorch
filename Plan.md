@@ -6,7 +6,7 @@
 
 ## 1. Project purpose
 
-mini-pytorch removes one layer of PyTorch “magic” at a time using readable Python/NumPy implementations.
+mini-pytorch removes one layer of PyTorch “magic” at a time with readable Python/NumPy implementations.
 
 The roadmap follows architectural dependency order:
 
@@ -36,8 +36,6 @@ Compiler stack
 
 ### v0.1 — Eager Tensor + Dynamic Autograd ✅
 
-Core mental model:
-
 ```text
 Tensor → Function → dynamic graph → backward → Parameter → Module → Optimizer
 ```
@@ -47,15 +45,13 @@ Implemented:
 - Tensor + `requires_grad`
 - reverse-mode autodiff
 - gradient accumulation
-- common differentiable operations
+- differentiable operators
 - Module / Parameter / Linear / Sequential
 - MSELoss
 - SGD / Adam
 - numerical gradcheck
 
 ### v0.2 — Optimizer State + LR Scheduler ✅
-
-Core mental model:
 
 ```text
 Parameter
@@ -67,7 +63,7 @@ LR Scheduler
 
 Implemented:
 
-- richer SGD
+- enhanced SGD
 - Adam / AdamW / Adamax
 - RMSprop / Adagrad
 - optimizer state serialization
@@ -77,8 +73,6 @@ Implemented:
 - ReduceLROnPlateau
 
 ### v0.3 — Dataset / Sampler / DataLoader + MNIST ✅
-
-Core mental model:
 
 ```text
 Dataset → Sampler → BatchSampler → DataLoader → collate_fn → Tensor batch
@@ -92,12 +86,10 @@ Implemented:
 - DataLoader
 - MNIST IDX loader
 - Flatten / CrossEntropyLoss
-- end-to-end MNIST MLP training
-- logging / metrics / plots / model checkpoints
+- MLP MNIST training
+- Loguru / metrics / plots / checkpoints
 
 ### v0.4 — Tensor Memory Model ✅
-
-Core mental model:
 
 ```text
 Storage + shape + stride + storage_offset + version counter
@@ -109,14 +101,12 @@ Implemented:
 - view aliasing
 - transpose / permute / slicing
 - `view()` vs `reshape()`
-- `is_contiguous()` / `contiguous()`
+- contiguous semantics
 - inplace mutation
-- shared Storage version counter
+- shared version counter
 - Autograd saved-version checks
 
 ### v0.5 — Operator Registry + Dispatcher ✅
-
-Core mental model:
 
 ```text
 Tensor API
@@ -134,247 +124,285 @@ redispatch
 
 Implemented:
 
-- `OperatorSchema`
+- OperatorSchema
 - operator/kernel registry
-- `DispatchKey`
-- `DispatchKeySet`
+- DispatchKey / DispatchKeySet
 - dispatch priority
-- per-key fallbacks
+- fallback
 - redispatch
 - CPU numerical kernels
 - Autograd wrappers above backend kernels
-- NoGrad fallback
-- dispatched `add / mul / matmul / relu / sum`
-- dispatcher introspection and error paths
+- dispatched add / mul / matmul / relu / sum
 
-Validated with 80-test full regression suite.
+Validated baseline: 80 tests.
+
+### v0.6 — Neural-Network Operator Stack / CNN ✅
+
+```text
+nn.Module
+    ↓
+functional operator
+    ↓
+Dispatcher
+    ↓
+Autograd wrapper
+    ↓ redispatch
+CPU NN kernel
+```
+
+Implemented:
+
+- `nn.Conv2d`
+- functional `conv2d`
+- Dispatcher-backed `aten::conv2d.default`
+- readable nested-loop Conv2d kernel
+- im2col + matmul Conv2d path
+- input / weight / bias gradients
+- stride / padding / dilation
+- explicit groups=1 boundary
+- `nn.MaxPool2d` + backward routing
+- `nn.Dropout`
+- `BatchNorm1d` / `BatchNorm2d`
+- Parameter vs Buffer semantics for BatchNorm state
+- CNN MNIST training example with logging/metrics/plots/checkpoints
+
+Validated baseline: **90 tests**.
 
 ---
 
-## 3. Current next milestone — v0.6 Neural-Network Operator Stack / CNN 🎯
+## 3. Current next milestone — v0.7 Device / Backend Abstraction 🎯
 
-### Why v0.6 comes after Dispatcher
+### Why v0.7 comes now
 
-The Dispatcher is only meaningful if it can support a nontrivial operator family. `Conv2d` is the first good stress test because it combines:
+v0.5 introduced operator dispatch, and v0.6 proved the Dispatcher can carry non-trivial neural-network operators. The missing architectural dimension is now **where a Tensor lives and which backend owns its allocation/execution**.
 
-- multi-dimensional shape rules;
-- trainable weights and bias;
-- nontrivial backward formulas;
-- meaningful backend kernel choices;
-- higher computational cost than simple pointwise operations.
+Without a device/backend abstraction, a naive implementation would eventually become:
 
-Therefore v0.6 should **use** the v0.5 operator architecture rather than bypassing it.
+```python
+if tensor.device == "cpu":
+    ...
+elif tensor.device == "cuda":
+    ...
+```
+
+repeated throughout Tensor methods and operators.
+
+v0.7 should prevent that design before any real accelerator work begins.
 
 ### Target architecture
 
 ```text
-nn.Conv2d
-    ↓
-functional conv2d
-    ↓
-aten::conv2d.default
-    ↓
-Dispatcher
-    ├── Autograd wrapper
-    │       ↓ redispatch
-    └── CPU reference kernel
-            ↓
-      readable convolution
+                       Tensor
+                         │
+          shape / stride / dtype / device
+                         │
+                         ▼
+                       Storage
+                         │
+                 backend-owned data
+                         │
+                         ▼
+                    logical operator
+                         │
+                         ▼
+                     Dispatcher
+                 ┌───────┴────────┐
+                 ▼                ▼
+               CPU           accelerator-like
+             backend             backend
 ```
 
-### Required implementation
+### v0.7.1 Device value object
 
-#### v0.6.1 Conv2d reference path
-
-- `nn.Conv2d`
-- functional `conv2d`
-- registered operator schema
-- CPU forward reference kernel using clear loops
-- input/weight/bias backward
-- stride
-- padding
-- deterministic shape validation
-- numerical gradcheck against finite differences / trusted NumPy reference
-
-#### v0.6.2 Conv2d educational optimization
-
-After the loop implementation is correct:
-
-- im2col
-- matrix-multiplication path
-- reference-vs-im2col equivalence tests
-- basic benchmark/example
-
-Keep the readable loop path; do not replace it entirely with optimized code.
-
-#### v0.6.3 Pooling
-
-- MaxPool2d
-- Dispatcher registration
-- backward index routing
-- shape/error tests
-
-#### v0.6.4 Dropout
-
-- `Dropout`
-- train/eval behavior
-- scaling convention
-- deterministic seeded tests
-
-#### v0.6.5 BatchNorm
-
-- BatchNorm1d / BatchNorm2d
-- train/eval behavior
-- learnable affine parameters
-- running mean/variance as buffers
-- buffer state_dict tests
-
-#### v0.6.6 CNN MNIST
-
-End-to-end model such as:
+Implement an explicit `Device` concept:
 
 ```text
-Conv2d
-  ↓
-ReLU
-  ↓
-MaxPool2d
-  ↓
-Conv2d
-  ↓
-ReLU
-  ↓
-Flatten
-  ↓
-Linear
-  ↓
-CrossEntropyLoss
+Device("cpu")
+Device("meta") or educational accelerator-like backend
 ```
 
-The example should reuse existing Dataset/DataLoader/Optimizer/Scheduler infrastructure.
+Requirements:
 
-### Definition of Done for v0.6
+- canonical string representation;
+- equality/hash semantics;
+- validation;
+- Tensor exposes `.device`;
+- Storage records device/backend identity.
 
-Tests must demonstrate:
+### v0.7.2 Backend-owned allocation
 
-- Conv2d forward correctness;
-- Conv2d input/weight/bias gradients;
-- Dispatcher routes Conv2d through Autograd → CPU;
-- reference loops and im2col agree;
-- pooling forward/backward correctness;
-- Dropout train/eval semantics;
-- BatchNorm parameter vs buffer semantics;
-- CNN can execute a training step end-to-end;
-- full regression suite remains green;
-- exact final `v0.6` branch-head CI passes.
+Separate allocation policy from Tensor metadata.
 
-### Explicit non-goals
+Conceptual target:
 
-v0.6 should not add:
+```text
+Backend.allocate(shape, dtype)
+Backend.from_numpy(array)
+Backend.to_numpy(storage)
+```
 
-- real CUDA;
-- `.to(device)`;
+The exact API may stay small, but Tensor construction should no longer assume that every Storage allocation is directly a NumPy array forever.
+
+### v0.7.3 Device-aware Dispatcher
+
+Extend DispatchKey inference so backend identity participates in routing.
+
+Target:
+
+```text
+CPU Tensor
+  ↓
+DispatchKeySet{Autograd?, CPU}
+
+other-backend Tensor
+  ↓
+DispatchKeySet{Autograd?, OTHER_BACKEND}
+```
+
+Do not encode backend selection as ad hoc conditions inside every operator.
+
+### v0.7.4 Tensor transfer
+
+Introduce an educational:
+
+```python
+x.to("cpu")
+x.to(other_device)
+```
+
+Semantics to define clearly:
+
+- same-device no-op vs copy behavior;
+- new Storage on transfer;
+- requires-grad policy;
+- view/alias behavior after transfer;
+- dtype preservation.
+
+### v0.7.5 Device mismatch errors
+
+Operations on incompatible devices should fail before backend math:
+
+```text
+cpu tensor + other-device tensor
+→ clear device mismatch error
+```
+
+Tests should prove this at Dispatcher/operator boundary.
+
+### v0.7.6 Optional accelerator experiment
+
+If the environment supports a lightweight optional backend such as CuPy, it may be explored behind an optional dependency.
+
+However:
+
+- v0.7 must pass on ordinary CPU CI;
+- accelerator hardware must not be required;
+- the architectural abstraction is the milestone, not GPU speed.
+
+A `meta` or simulated backend is acceptable if it makes the mechanism clearer and deterministic.
+
+### Definition of Done for v0.7
+
+Tests should demonstrate:
+
+- Device construction/equality/validation;
+- Tensor and Storage expose device identity;
+- CPU allocation still behaves exactly as before;
+- backend allocation boundary is explicit;
+- Dispatcher key inference uses backend identity;
+- same operator API selects different backend registrations;
+- device mismatch errors are clear;
+- `.to(device)` follows documented copy/alias semantics;
+- Autograd routing still composes above backend routing;
+- Conv2d and basic arithmetic remain correct on CPU;
+- full regression suite stays green;
+- exact final v0.7 branch-head CI passes.
+
+### Explicit non-goals for v0.7
+
+Do not add yet:
+
+- production CUDA allocator;
+- CUDA streams/events;
+- NCCL;
+- automatic mixed precision;
 - distributed training;
-- multiprocessing DataLoader;
-- compiler graph capture.
+- graph compiler work;
+- performance claims requiring GPU hardware.
 
 ---
 
-## 4. Planned future milestones
-
-### v0.7 — Device and Backend Abstraction
-
-Goal:
-
-```text
-Tensor
-  ↓
-Dispatcher
-  ├── NumPy CPU backend
-  └── optional accelerator backend
-```
-
-Planned concepts:
-
-- `Device`
-- device metadata on Tensor/Storage
-- `.to(device)`
-- backend-owned allocation
-- CPU registration
-- optional CuPy experiment if environment permits
-- device mismatch errors
+## 4. Future milestones
 
 ### v0.8 — Advanced Autograd Engine
 
 Planned concepts:
 
-- graph lifetime
-- non-leaf `retain_grad()`
-- hooks
-- `retain_graph`
-- custom Function examples
-- optional `create_graph`
-- simple higher-order gradients
+- graph lifetime;
+- non-leaf `retain_grad()`;
+- hooks;
+- `retain_graph`;
+- custom Function examples;
+- optional `create_graph`;
+- simple higher-order gradients.
 
 ### v0.9 — Serialization / Training Runtime / Reproducibility
 
 Planned concepts:
 
-- unified model + optimizer + scheduler + RNG checkpoint
-- epoch / global-step state
-- deterministic resume
-- seed management
-- optional gradient clipping/callback concepts
+- unified model + optimizer + scheduler + RNG checkpoint;
+- epoch / global-step state;
+- deterministic resume;
+- seed management;
+- optional gradient clipping/callback concepts.
 
 ### v0.10 — Distributed / DDP Concepts
 
 Planned concepts:
 
-- DistributedSampler
-- ProcessGroup abstraction
-- simulated/CPU AllReduce
-- DDP wrapper
-- gradient-ready hooks
-- bucket concepts
-
-The goal is architectural understanding, not reimplementing NCCL.
+- DistributedSampler;
+- ProcessGroup abstraction;
+- simulated/CPU AllReduce;
+- DDP wrapper;
+- gradient-ready hooks;
+- bucket concepts.
 
 ### v0.11 — Graph IR and Eager-to-Graph Capture
 
 Planned concepts:
 
-- Node / Value / Graph
-- supported-op tracing
-- graph interpreter
-- explicit graph breaks
+- Node / Value / Graph;
+- supported-op tracing;
+- graph interpreter;
+- explicit graph breaks.
 
 ### v0.12 — Dynamo-like Guards and Graph Cache
 
 Planned concepts:
 
-- shape/dtype/device/constant guards
-- graph cache
-- recompile on guard failure
-- dynamic-shape experiments
+- shape/dtype/device/constant guards;
+- graph cache;
+- recompile on guard failure;
+- dynamic-shape experiments.
 
 ### v0.13 — AOTAutograd-like Forward/Backward Capture
 
 Planned concepts:
 
-- forward graph
-- backward graph
-- saved intermediates
-- eager-vs-captured gradient equivalence
+- forward graph;
+- backward graph;
+- saved intermediates;
+- eager-vs-captured gradient equivalence.
 
 ### v0.14 — Inductor-like Lowering and Kernel Fusion
 
 Planned concepts:
 
-- simple lower-level loop IR
-- pointwise fusion
-- reduction lowering
-- generated Python/NumPy kernels
-- eager vs compiled correctness/performance comparison
+- lower-level loop IR;
+- pointwise fusion;
+- reduction lowering;
+- generated Python/NumPy kernels;
+- eager vs compiled correctness/performance comparison.
 
 ---
 
@@ -401,13 +429,15 @@ exact final branch-head CI green
         ↓
 freeze branch
         ↓
-integrate validated state to main
+integrate validated state into main
+        ↓
+restore canonical main docs
         ↓
 advance this Plan.md
 ```
 
 ## 6. Current directive
 
-`v0.5` is complete and frozen. `main` contains the validated Dispatcher implementation.
+`v0.6` is complete and frozen. `main` contains the validated CNN operator stack.
 
-The next version branch should be **`v0.6`**, created from current `main`, and should focus on the **neural-network operator stack / CNN**, starting with a readable Dispatcher-backed Conv2d reference implementation.
+The next branch should be **`v0.7`**, created from current `main`, and should focus on **Device / Backend abstraction** while preserving the Dispatcher and Storage architecture already established.
