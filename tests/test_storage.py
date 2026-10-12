@@ -47,6 +47,15 @@ class TestStorageAndViews(unittest.TestCase):
             np.array([[5, 6, 7], [9, 10, 11]], dtype=float),
         )
 
+    def test_negative_step_slice_uses_negative_stride(self):
+        x = Tensor(np.arange(6))
+        y = x[::-1]
+        self.assertIs(x.storage, y.storage)
+        self.assertEqual(y.storage_offset, 5)
+        self.assertEqual(y.stride(), (-1,))
+        self.assertFalse(y.is_contiguous())
+        np.testing.assert_allclose(y.data, [5, 4, 3, 2, 1, 0])
+
     def test_view_on_contiguous_shares_storage(self):
         x = Tensor(np.arange(12).reshape(3, 4))
         y = x.view(2, 6)
@@ -114,6 +123,27 @@ class TestStorageAndViews(unittest.TestCase):
         y = x[1:5:2].sum()
         y.backward()
         np.testing.assert_allclose(x.grad, [0, 1, 0, 1, 0, 0])
+
+
+class TestTrackedFrameworkMutations(unittest.TestCase):
+    def test_optimizer_step_bumps_parameter_version(self):
+        from mini_pytorch.nn import Parameter
+        from mini_pytorch.optim import SGD
+
+        p = Parameter([1.0, -1.0])
+        p.grad = np.array([0.5, -0.25])
+        before = p._version
+        SGD([p], lr=0.1).step()
+        self.assertEqual(p._version, before + 1)
+
+    def test_load_state_dict_bumps_parameter_version(self):
+        from mini_pytorch import nn
+
+        layer = nn.Linear(2, 1)
+        state = layer.state_dict()
+        before = layer.weight._version
+        layer.load_state_dict(state)
+        self.assertEqual(layer.weight._version, before + 1)
 
 
 if __name__ == "__main__":
