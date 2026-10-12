@@ -4,7 +4,9 @@
 
 **版本主题：** Operator Schema → Registry → DispatchKeySet → Dispatcher → Redispatch
 
-**状态：** active development / release candidate
+**状态：** frozen historical learning snapshot
+
+**Package version：** `0.5.0`
 
 ## 1. 为什么 PyTorch 需要 Dispatcher
 
@@ -149,13 +151,7 @@ Autograd Mul wrapper
       attach MulBackward
 ```
 
-因此 CPU kernel 只需要知道：
-
-```python
-return a * b
-```
-
-它不需要知道：
+因此 CPU kernel 只需要知道数值计算，不需要知道：
 
 - `requires_grad`
 - `GradFn`
@@ -186,40 +182,19 @@ docs/DISPATCHER.md
 examples/08_dispatcher.py
 ```
 
-### `dispatcher.py`
-
-包含：
-
-- `OperatorSchema`
-- `DispatchKey`
-- `DispatchKeySet`
-- `Dispatcher`
-- `DispatchDecision`
-- `Library`
-- global `dispatcher`
-
-### `kernels.py`
-
-只包含 NumPy numerical kernels，不包含 Autograd。
-
-### `operator_registry.py`
-
-把 logical operator 与：
-
-```text
-CPU implementation
-Autograd implementation
-NoGrad fallback
-```
-
-连接起来。
-
 ## 7. 快速运行
 
 ```bash
 pip install -e .
 python -m unittest discover -s tests -v
 python examples/08_dispatcher.py
+```
+
+冻结前的精确 release-candidate HEAD 已在 GitHub Actions 上通过：
+
+```text
+Ran 80 tests in 0.739s
+OK
 ```
 
 ## 8. 一个最小 introspection 示例
@@ -233,26 +208,7 @@ y = Tensor([3.0, 4.0])
 print(dispatcher.explain("aten::add.Tensor", x, y))
 ```
 
-应该看到类似：
-
-```text
-selected_key = Autograd
-keyset       = {Autograd, CPU}
-```
-
-而在：
-
-```python
-with no_grad():
-    ...
-```
-
-中会变成：
-
-```text
-selected_key = NoGrad
-implementation = fallback
-```
+应得到 `Autograd` 作为最高优先级 key；而在 `no_grad()` 中会选择 `NoGrad` fallback，再 redispatch 到 CPU。
 
 ## 9. v0.5 从 v0.4 继承什么
 
