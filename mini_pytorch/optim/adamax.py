@@ -41,3 +41,4 @@ class Adamax(Optimizer):
                 m += (1.0 - beta1) * grad
                 np.maximum(beta2 * u, np.abs(grad) + eps, out=u)
                 p.data -= (lr / (1.0 - beta1**t)) * m / u
+                p._mark_dirty()
