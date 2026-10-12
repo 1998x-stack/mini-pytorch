@@ -5,7 +5,8 @@ from typing import Any, Optional
 
 import numpy as np
 
-from .autograd import GradFn, is_grad_enabled
+from .autograd import Context, GradFn, is_grad_enabled
+from .device import Device, as_device
 from .storage import Storage, contiguous_strides
 
 
@@ -44,13 +45,16 @@ def _normalize_shape(shape: tuple[int, ...], numel: int) -> tuple[int, ...]:
     return tuple(dims)
 
 
-class Tensor:
-    """A tiny differentiable Tensor with explicit Storage/layout semantics.
+class _ToDevice:
+    """Autograd identity node used for educational device copies."""
 
-    v0.5 preserves the v0.4 Storage model and routes selected logical
-    operators through the operator Dispatcher before a concrete implementation
-    is selected.
-    """
+    @staticmethod
+    def backward(ctx: Context, grad_output: np.ndarray):
+        return np.asarray(grad_output)
+
+
+class Tensor:
+    """A tiny differentiable Tensor with explicit Storage/layout/device semantics."""
 
     __array_priority__ = 1000
 
@@ -61,10 +65,16 @@ class Tensor:
         requires_grad: bool = False,
         dtype=None,
         name: Optional[str] = None,
+        device: Device | str | None = None,
     ) -> None:
+        if isinstance(data, Tensor):
+            if device is None:
+                device = data.device
+            data = data.data
+        resolved_device = as_device(device)
         array = _as_array(data, dtype=dtype)
         contiguous = np.array(array, copy=True, order="C", subok=False)
-        self._storage = Storage(contiguous, copy=True)
+        self._storage = Storage(contiguous, copy=True, device=resolved_device)
         self._shape = tuple(contiguous.shape)
         self._strides = contiguous_strides(self._shape)
         self._storage_offset = 0
@@ -104,10 +114,20 @@ class Tensor:
         *,
         inputs: tuple["Tensor", ...],
         requires_grad: bool,
+        device: Device | str | None = None,
     ) -> "Tensor":
-        """Preserve Storage when NumPy produced a genuine view of an input."""
+        """Create an op result while preserving backend and genuine NumPy views."""
         array = np.asarray(array)
+        input_devices = {source.device for source in inputs}
+        if len(input_devices) > 1:
+            rendered = ", ".join(sorted(str(d) for d in input_devices))
+            raise ValueError(f"operation received tensors on different devices: {rendered}")
+        target_device = as_device(device) if device is not None else (
+            next(iter(input_devices)) if input_devices else Device("cpu")
+        )
         for source in inputs:
+            if source.device != target_device:
+                continue
             if array.dtype != source.data.dtype:
                 continue
             if not np.shares_memory(array, source.data):
@@ -127,7 +147,12 @@ class Tensor:
                 storage_offset=offset,
                 requires_grad=requires_grad,
             )
-        return cls(array, requires_grad=requires_grad, dtype=array.dtype)
+        return cls(
+            array,
+            requires_grad=requires_grad,
+            dtype=array.dtype,
+            device=target_device,
+        )
 
     def _make_numpy_view(self) -> np.ndarray:
         if any(dim == 0 for dim in self._shape):
@@ -144,6 +169,10 @@ class Tensor:
     @property
     def storage(self) -> Storage:
         return self._storage
+
+    @property
+    def device(self) -> Device:
+        return self._storage.device
 
     @property
     def storage_offset(self) -> int:
@@ -265,6 +294,34 @@ class Tensor:
             name=self.name,
         )
 
+    def to(self, device: Device | str, *, copy: bool = False) -> "Tensor":
+        """Transfer logical values to another backend-owned Storage.
+
+        A same-device call is a no-op unless ``copy=True``. Cross-device copies
+        are contiguous materializations and therefore do not alias the source
+        Storage. When grad mode is enabled, the copy is differentiable with an
+        identity backward.
+        """
+
+        target = as_device(device)
+        if target == self.device and not copy:
+            return self
+
+        out = Tensor(
+            np.array(self.data, copy=True, order="C"),
+            requires_grad=False,
+            dtype=self.dtype,
+            name=self.name,
+            device=target,
+        )
+        requires_grad = is_grad_enabled() and self.requires_grad
+        out.requires_grad = requires_grad
+        if requires_grad:
+            ctx = Context()
+            ctx._bind_inputs((self,), (self.data,))
+            out._grad_fn = GradFn(function=_ToDevice, parents=(self,), ctx=ctx)
+        return out
+
     def numpy(self) -> np.ndarray:
         return self.data
 
@@ -283,9 +340,17 @@ class Tensor:
     def _mark_dirty(self) -> None:
         self._storage.bump_version()
 
+    def _check_same_device(self, other: "Tensor") -> None:
+        if self.device != other.device:
+            raise ValueError(f"device mismatch: {self.device} vs {other.device}")
+
     def add_(self, other) -> "Tensor":
         self._check_inplace_allowed()
-        value = other.data if isinstance(other, Tensor) else other
+        if isinstance(other, Tensor):
+            self._check_same_device(other)
+            value = other.data
+        else:
+            value = other
         result = self.data + value
         if result.shape != self.shape:
             raise ValueError("inplace add cannot change tensor shape")
@@ -295,7 +360,11 @@ class Tensor:
 
     def mul_(self, other) -> "Tensor":
         self._check_inplace_allowed()
-        value = other.data if isinstance(other, Tensor) else other
+        if isinstance(other, Tensor):
+            self._check_same_device(other)
+            value = other.data
+        else:
+            value = other
         result = self.data * value
         if result.shape != self.shape:
             raise ValueError("inplace mul cannot change tensor shape")
@@ -312,9 +381,8 @@ class Tensor:
         self._mark_dirty()
         return self
 
-    @staticmethod
-    def _ensure_tensor(value: Any) -> "Tensor":
-        return value if isinstance(value, Tensor) else Tensor(value)
+    def _ensure_tensor(self, value: Any) -> "Tensor":
+        return value if isinstance(value, Tensor) else Tensor(value, device=self.device)
 
     # ---------- arithmetic ----------
     def __add__(self, other):
@@ -421,7 +489,7 @@ class Tensor:
         return 1.0 / (1.0 + (-self).exp())
 
     def __repr__(self) -> str:
-        meta = f", requires_grad={self.requires_grad}"
+        meta = f", device={self.device}, requires_grad={self.requires_grad}"
         meta += f", stride={self._strides}, offset={self._storage_offset}"
         if self.grad_fn is not None:
             meta += f", grad_fn=<{self.grad_fn}>"
