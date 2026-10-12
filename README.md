@@ -1,265 +1,600 @@
-# mini-pytorch — Architecture-Driven PyTorch Learning Project
+# mini-pytorch v0.9 — Training Runtime / Serialization / Reproducibility
 
-> 用可运行的 Python/NumPy 代码，按真实 PyTorch 的架构依赖顺序，一层一层拆开核心机制。
+> 把“模型能训练”推进到“训练进程可以被暂停、保存、重新创建并确定性继续”。
 
-**Latest integrated version:** `v0.8.0`
+**Package version:** `0.9.0`
 
-**Current main milestone:** Advanced Autograd Engine
+**Validated release-candidate baseline:** `140/140 tests passed`
 
-**Next milestone:** `v0.9` Training Runtime / Serialization / Reproducibility
+## 1. 本版本解决什么问题
 
-mini-pytorch 不追求复制完整 PyTorch API，而是持续回答这些问题：
+只保存模型权重，并不能完整恢复训练。
 
-```text
-Tensor 是什么？
-      ↓
-Autograd 如何构图和 backward？
-      ↓
-Module / Optimizer 如何组织训练状态？
-      ↓
-Dataset / Sampler / DataLoader 为什么拆开？
-      ↓
-Storage / stride / view 为什么重要？
-      ↓
-operator 为什么需要 Dispatcher？
-      ↓
-复杂 NN operator 如何建立在 Dispatcher 上？
-      ↓
-Tensor 的 device/backend identity 如何建模？
-      ↓
-Autograd Engine 如何管理 graph lifetime / hooks / repeated backward？
-      ↓
-训练到底有哪些状态必须被 checkpoint 才能确定性恢复？
-```
-
-## 1. 版本学习地图
-
-| Version | 核心主题 | 最重要的问题 |
-|---|---|---|
-| `v0.1` | Tensor + Dynamic Autograd | `backward()` 如何自动求导？ |
-| `v0.2` | Optimizer + LR Scheduler | 优化状态为什么独立于模型？ |
-| `v0.3` | Dataset + Sampler + DataLoader + MNIST | 数据为什么拆成 dataset / sampling / batching？ |
-| `v0.4` | Storage + stride + views + version counter | Tensor 为什么不等于 ndarray？ |
-| `v0.5` | Operator Schema + Dispatcher + Redispatch | 一个 `x + y` 为什么需要路由层？ |
-| `v0.6` | Conv2d / Pooling / Dropout / BatchNorm | 复杂 NN operator 如何复用 Dispatcher？ |
-| `v0.7` | Device / Backend | 多 backend 为什么不能靠散落的 `if device`？ |
-| `v0.8` | Advanced Autograd Engine | graph lifetime / retain_graph / hooks 如何工作？ |
-| `v0.9` | Training Runtime / Checkpoint / RNG | 怎样暂停训练并确定性继续？ |
-
-每个历史版本 branch 都包含：
+真实训练过程还依赖：
 
 ```text
-README.md   → 本版本学习入口
-version.md  → 与上一版的精确 delta
-Agents.md   → 本版本工程约束
+model parameters / buffers
+optimizer momentum / moments
+scheduler progress / current LR
+random stream position
+training counters
+checkpoint schema metadata
 ```
 
-## 2. 当前 main 架构
+v0.9 的核心目标是：
 
 ```text
-                         Tensor
-             shape / stride / dtype / device
-                           │
-                           ▼
-                         Storage
-          backend-owned allocation + version
-                           │
-                           ▼
-                    logical operator
-                           │
-                           ▼
-                      Dispatcher
-          policy keys + backend dispatch keys
-             ┌─────────────┼─────────────┐
-             ▼             ▼             ▼
-          Autograd       NoGrad       CPU / EDU
-             │                           │
-             └────── redispatch ─────────┘
-                           │
-                           ▼
-                    numerical kernel
-                           │
-                           ▼
-                      Tensor / GradFn
-                           │
-                           ▼
-                   Context / GradFn DAG
-                           │
-                           ▼
-                     AutogradEngine
-             ┌─────────────┼──────────────┐
-             ▼             ▼              ▼
-       local grad flow  graph lifetime  gradient hooks
-             │          retain_graph      │
-             ▼                            ▼
-       leaf .grad                 retained non-leaf .grad
-
-nn.Module → functional NN operator → Dispatcher
-
-Dataset → Sampler → BatchSampler → DataLoader
-
-Module / Parameter → Optimizer → LR Scheduler
+training process
+      ↓
+collect complete logical state
+      ↓
+inspectable checkpoint
+      ↓
+construct fresh objects
+      ↓
+restore
+      ↓
+continue with the same future behavior
 ```
 
-`EDU` 是确定性的模拟教学 backend：拥有独立 Device / Backend / DispatchKey，但底层仍使用 NumPy host memory。它用于验证架构，不代表 CUDA/GPU 加速。
+## 2. 相比 v0.8 的核心变化
 
-## 3. v0.8 最新能力
-
-### 显式 Autograd Engine
+v0.8：
 
 ```text
 Tensor.backward()
       ↓
-AutogradEngine.backward()
+AutogradEngine
       ↓
-Topology
-      ↓
-Engine-local gradient accumulation
-      ↓
-Hooks
-      ↓
-Function.backward VJP
-      ↓
-release / retain graph
+Optimizer.step()
 ```
 
-Backward traversal 不再写死在 Tensor 里。
-
-### Graph lifetime
-
-默认：
-
-```python
-loss.backward()
-```
-
-成功后释放 backward-only Context state，因此再次执行同一 graph 会明确失败。
-
-需要重复执行时：
-
-```python
-loss.backward(retain_graph=True)
-loss.backward()
-```
-
-### Non-leaf `retain_grad()`
-
-```python
-hidden = x * x
-hidden.retain_grad()
-```
-
-默认 non-leaf gradient 只是 Engine transient state；调用 `retain_grad()` 后才持久化到 `hidden.grad`。
-
-### Gradient hooks
-
-```python
-handle = tensor.register_hook(fn)
-handle.remove()
-```
-
-hook 可以观察 gradient，也可以返回 replacement gradient 改变上游梯度流。
-
-### Custom Function
-
-`Function / Context / GradFn / AutogradEngine` 已作为公开教学接口。
-
-Custom Function 与内置 Function 共用：
+v0.9：
 
 ```text
-Function.apply → Context / GradFn → AutogradEngine
+Module
+Optimizer
+Scheduler
+RNG
+TrainingState
+      │
+      ▼
+CheckpointState
+      │
+      ▼
+metadata.json + tensors.npz
+      │
+      ▼
+fresh model / optimizer / scheduler
+      │
+      ▼
+restore
+      │
+      ▼
+deterministic continuation
 ```
 
-### Higher-order gradient boundary
+训练第一次被当成一个**完整状态机**来处理。
+
+---
+
+## 3. Framework RNG
+
+新增：
 
 ```python
-loss.backward(create_graph=True)
+from mini_pytorch import (
+    manual_seed,
+    get_rng_state,
+    set_rng_state,
+)
 ```
 
-当前明确抛出 `NotImplementedError`，因为 backward formulas 仍产生 `np.ndarray`，尚未建立可微分的 backward Tensor graph。
-
-## 4. 当前测试基线
+关键区别：
 
 ```text
-v0.8
-123 tests
-OK
+seed
+→ 随机流从哪里开始
+
+RNG state
+→ 随机流现在走到哪里
 ```
 
-其中 v0.8 新增 20 个 Autograd Engine tests，覆盖：
+因此 checkpoint 必须保存 state，而不是只记住 seed。
 
-- graph release / repeated backward；
-- `retain_graph`；
-- shared-node accumulation；
-- non-leaf `retain_grad()`；
-- gradient hook order / transform / removal；
-- custom Function；
-- saved-version safety；
-- CPU / EDU parity；
-- explicit higher-order limitation。
-
-## 5. 推荐学习顺序
+当前 framework-owned RNG 覆盖：
 
 ```text
-v0.1  autograd.py → tensor.py → ops.py
-v0.2  optim/* → lr_scheduler.py
-v0.3  data/dataset.py → sampler.py → dataloader.py → mnist.py
-v0.4  storage.py → tensor.py → docs/TENSOR_MEMORY.md
-v0.5  dispatcher.py → operator_registry.py → docs/DISPATCHER.md
-v0.6  kernels.py → nn_ops.py → nn/* → docs/CNN_OPERATORS.md
-v0.7  device.py → backend.py → storage.py → dispatcher.py → docs/DEVICE_BACKEND.md
-v0.8  autograd.py → autograd_engine.py → tensor.py → docs/AUTOGRAD_ENGINE.md
+Linear initialization
+Conv2d initialization
+Dropout(seed=None)
+RandomSampler(seed=None)
 ```
 
-v0.8 教学示例：
+显式 `seed=` 的 Dropout / RandomSampler 继续拥有组件私有随机流，用于保持旧版本语义。
 
-```bash
-python examples/11_autograd_engine.py
+---
+
+## 4. TrainingState
+
+新增：
+
+```python
+from mini_pytorch import TrainingState
+
+state = TrainingState(
+    epoch=2,
+    global_step=731,
+    batch_in_epoch=19,
+    best_metric=0.91,
+)
 ```
 
-完整回归：
+职责非常明确：
+
+```text
+TrainingState
+→ 训练走到哪里
+```
+
+而不是：
+
+```text
+TrainingState
+→ 保存所有 Tensor
+```
+
+model / optimizer / scheduler 各自继续使用自己的 `state_dict()`。
+
+---
+
+## 5. CheckpointState
+
+逻辑 checkpoint：
+
+```text
+CheckpointState
+├── schema_version
+├── framework_version
+├── model_state
+├── optimizer_state
+├── scheduler_state
+├── rng_state
+├── training_state
+└── metadata
+```
+
+它与文件格式分离。
+
+因此：
+
+```python
+state = runtime.collect_checkpoint_state(...)
+```
+
+只是收集状态，不做磁盘 I/O。
+
+---
+
+## 6. 可检查的 checkpoint 格式
+
+保存后：
+
+```text
+checkpoint/
+├── metadata.json
+└── tensors.npz
+```
+
+### metadata.json
+
+可以直接打开阅读：
+
+```json
+{
+  "format": "mini-pytorch-checkpoint",
+  "schema_version": 1,
+  "framework_version": "0.9.0",
+  "training_state": {
+    "epoch": 2,
+    "global_step": 731,
+    "batch_in_epoch": 19
+  }
+}
+```
+
+### tensors.npz
+
+保存：
+
+```text
+model arrays
+optimizer moments
+buffer arrays
+其他 ndarray state
+```
+
+复杂 dict / tuple / list 结构放在 JSON 中，并用显式 array reference 指向 NPZ。
+
+没有使用 pickle 作为主要机制。
+
+---
+
+## 7. 保存 checkpoint
+
+```python
+from mini_pytorch import TrainingState, save_checkpoint
+
+state = TrainingState(epoch=3, global_step=120)
+
+save_checkpoint(
+    "checkpoint",
+    model,
+    optimizer,
+    scheduler,
+    training_state=state,
+    metadata={"experiment": "demo"},
+)
+```
+
+逻辑路径：
+
+```text
+Module.state_dict
+Optimizer.state_dict
+Scheduler.state_dict
+get_rng_state
+TrainingState
+       ↓
+CheckpointState
+       ↓
+serialize
+```
+
+---
+
+## 8. 恢复 checkpoint
+
+重点不是“把旧对象反序列化回来”，而是：
+
+```text
+重新创建对象
+      ↓
+把 checkpoint state 应用到新对象
+```
+
+例如：
+
+```python
+model = build_model()
+optimizer = optim.Adam(model.parameters(), lr=0.02)
+scheduler = optim.StepLR(optimizer, step_size=2)
+
+state = load_checkpoint(
+    "checkpoint",
+    model,
+    optimizer,
+    scheduler,
+)
+```
+
+Restore 顺序：
+
+```text
+validate schema
+      ↓
+model
+      ↓
+optimizer
+      ↓
+scheduler
+      ↓
+TrainingState
+      ↓
+RNG state  ← 最后
+```
+
+RNG 最后恢复非常关键，因为 fresh model construction 本身可能消耗随机数。
+
+---
+
+## 9. Device-neutral checkpoint values
+
+checkpoint 的 ndarray 是 host values，但不会强制目标模型回 CPU。
+
+例如：
+
+```python
+model = build_model().to("edu")
+load_checkpoint(..., model, optimizer)
+```
+
+状态加载使用现有 Parameter / Buffer Storage，因此：
+
+```text
+serialized NumPy value
+      ↓
+write into target Tensor Storage
+      ↓
+EDU device preserved
+```
+
+v0.9 已有专项测试验证 CPU checkpoint → EDU target restore。
+
+---
+
+## 10. 为什么 optimizer state 必须保存
+
+以 Adam 为例：
+
+```text
+parameter
++ gradient
++ step
++ exp_avg
++ exp_avg_sq
++ LR/options
+      ↓
+next update
+```
+
+只有 parameter 一样，下一步训练也不一定一样。
+
+因此：
+
+```text
+model weights only
+≠
+training state
+```
+
+---
+
+## 11. 为什么 scheduler state 也必须保存
+
+StepLR 等 scheduler 有自己的时间位置：
+
+```text
+last_epoch
+_step_count
+_last_lr
+base_lrs
+```
+
+checkpoint 中如果存在 scheduler state，strict restore 要求提供目标 scheduler；不会静默忽略。
+
+---
+
+## 12. Deterministic Resume — 本版本核心验证
+
+测试模型：
+
+```text
+Linear
+  ↓
+ReLU
+  ↓
+Dropout(seed=None)
+  ↓
+Linear
+```
+
+优化过程：
+
+```text
+Adam
++
+StepLR
++
+framework RNG
+```
+
+### Run A
+
+```text
+seed S
+ ↓
+train 1 ... N
+ ↓
+final state A
+```
+
+### Run B
+
+```text
+seed S
+ ↓
+train 1 ... K
+ ↓
+save
+ ↓
+construct fresh objects
+ ↓
+load
+ ↓
+train K+1 ... N
+ ↓
+final state B
+```
+
+CI 断言：
+
+```text
+losses A == losses B
+model state A == B
+optimizer state A == B
+scheduler state A == B
+TrainingState A == B
+future RNG draws A == B
+```
+
+这才是 v0.9 对“恢复训练”的定义。
+
+---
+
+## 13. Resume boundary
+
+v0.9 明确支持受控 step / epoch boundary 的确定性恢复。
+
+虽然 `TrainingState` 有：
+
+```text
+batch_in_epoch
+```
+
+但本版本不声称可以恢复：
+
+```text
+任意已经消费一半的 multi-worker DataLoader iterator
+```
+
+如果 `RandomSampler(seed=None)` 在完整 epoch 边界继续，它的随机顺序由 framework RNG 控制并可随 checkpoint 恢复。
+
+---
+
+## 14. 写入安全
+
+保存过程不是直接写最终目录：
+
+```text
+staging directory
+      ↓
+write metadata.json
+write tensors.npz
+fsync files
+      ↓
+publish by rename
+```
+
+覆盖已有 checkpoint 时会先移动旧目录到 backup；发布失败时尝试恢复旧版本。
+
+这是教学型 atomic-ish persistence，而不是分布式生产 checkpoint 服务。
+
+---
+
+## 15. 严格失败语义
+
+v0.9 会明确拒绝：
+
+```text
+unknown schema
+missing metadata.json
+missing tensors.npz
+corrupt NPZ
+wrong model parameter shape
+optimizer group mismatch
+scheduler state mismatch
+existing path when overwrite=False
+```
+
+不会为了“加载成功”而偷偷 reshape 参数或丢弃重要 state。
+
+---
+
+## 16. 新增核心文件
+
+```text
+mini_pytorch/runtime/
+├── __init__.py
+├── rng.py
+├── state.py
+└── checkpoint.py
+
+ tests/test_runtime_checkpoint.py
+ docs/TRAINING_RUNTIME.md
+ examples/12_checkpoint_resume.py
+```
+
+重点修改：
+
+```text
+mini_pytorch/nn/linear.py
+mini_pytorch/nn/conv.py
+mini_pytorch/nn/dropout.py
+mini_pytorch/data/sampler.py
+mini_pytorch/__init__.py
+pyproject.toml
+```
+
+---
+
+## 17. 推荐阅读顺序
+
+```text
+runtime/rng.py
+    ↓
+runtime/state.py
+    ↓
+runtime/checkpoint.py
+    ↓
+nn/linear.py + conv.py + dropout.py
+    ↓
+data/sampler.py
+    ↓
+tests/test_runtime_checkpoint.py
+    ↓
+docs/TRAINING_RUNTIME.md
+    ↓
+examples/12_checkpoint_resume.py
+```
+
+---
+
+## 18. 快速运行
 
 ```bash
 pip install -e .
 python -m unittest discover -s tests -v
+python examples/12_checkpoint_resume.py
 ```
 
-## 6. 当前明确非目标
-
-当前项目仍刻意不实现：
-
-- real CUDA / CuPy runtime；
-- asynchronous streams/events；
-- true higher-order Autograd；
-- distributed / DDP；
-- eager-to-graph compiler capture；
-- production kernel fusion/runtime。
-
-这些会按照 `Plan.md` 的依赖顺序逐步进入。
-
-## 7. 下一版：v0.9
-
-下一阶段是 **Training Runtime / Serialization / Reproducibility**。
-
-核心问题：
-
-> 保存 model weights 为什么还不足以“恢复训练”？
-
-目标状态集合：
+当前 release-candidate：
 
 ```text
-model state
-optimizer state
-scheduler state
-RNG state
-epoch / global_step
-runtime metadata
-      ↓
-unified checkpoint
-      ↓
-load + validate
-      ↓
-deterministic resume
+140 tests
+OK
 ```
 
-详细设计与验收任务见 `Plan.md`。
+相比 v0.8：
+
+```text
+123
+  +17 runtime/checkpoint tests
+=140
+```
+
+---
+
+## 19. Explicit non-goals
+
+v0.9 不实现：
+
+- multi-worker arbitrary mid-epoch resume；
+- distributed/sharded checkpoint；
+- async checkpoint writer；
+- remote object store；
+- DDP/NCCL；
+- compiler graph serialization；
+- cryptographic checkpoint signing。
+
+---
+
+## 20. 下一版本
+
+`v0.10` 将进入 **Distributed / DDP Concepts**：
+
+```text
+Autograd gradient-ready signal
+      ↓
+DDP reducer
+      ↓
+gradient buckets
+      ↓
+ProcessGroup.all_reduce
+      ↓
+replica-consistent gradients
+```
+
+下一步不再是“如何保存单机训练”，而是：
+
+> 多个模型副本如何在每一步之后保持一致？
