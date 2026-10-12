@@ -1,309 +1,414 @@
-# mini-pytorch — Architecture-Driven PyTorch Learning Project
+# mini-pytorch v0.6 — CNN Operator Stack
 
-> 用可运行的 Python/NumPy 代码，一层一层拆开 PyTorch 的核心机制。
+> 用 Conv2d / Pooling / Dropout / BatchNorm 把 v0.5 的 Dispatcher 真正带进神经网络算子层。
 
-**Latest integrated version:** `v0.5.0`
+**版本主题：** Module → Functional API → Dispatcher → Autograd wrapper → CPU kernel
 
-**Current main milestone:** Operator Registry + Dispatcher + Redispatch
+**Package version：** `0.6.0`
 
-mini-pytorch 的目标不是复制完整 PyTorch，而是按照架构依赖顺序回答：
+**当前验证基线：** `90/90 tests passed`（核心实现 release candidate）
+
+## 1. v0.6 相比 v0.5 增加了什么
+
+v0.5 解决：
 
 ```text
-Tensor 是什么？
-      ↓
-Autograd 为什么能自动 backward？
-      ↓
-Module / Parameter / Optimizer 如何组织训练状态？
-      ↓
-数据如何经过 Dataset / Sampler / DataLoader？
-      ↓
-Storage / stride / view 为什么重要？
-      ↓
-一个 operator 为什么需要 Dispatcher？
-      ↓
-如何继续扩展 CNN / device / distributed / compiler？
+一个 logical operator
+为什么需要 schema / registry / DispatchKey / redispatch？
 ```
 
-## 1. 版本学习地图
-
-| Version | 核心主题 | 最重要的问题 |
-|---|---|---|
-| `v0.1` | Tensor + Dynamic Autograd | `backward()` 到底如何自动求导？ |
-| `v0.2` | Optimizer + LR Scheduler | 优化状态为什么独立于模型？ |
-| `v0.3` | Dataset + Sampler + DataLoader + MNIST | 数据为什么要拆成 dataset / sampling / batching？ |
-| `v0.4` | Storage + stride + views + version counter | Tensor 为什么不等于 ndarray？ |
-| `v0.5` | Operator Schema + Dispatcher + Redispatch | 一个 `x + y` 为什么需要路由层？ |
-| `v0.6` | CNN operator stack | 如何让 Conv2d 等复杂算子建立在 Dispatcher 上？ |
-
-每个历史分支都有自己的：
+v0.6 继续解决：
 
 ```text
-README.md   → 学习入口
-version.md  → 精确版本边界
-Agents.md   → 该分支开发约束
+复杂神经网络 operator
+如何建立在 Dispatcher 上？
 ```
 
-## 2. 当前 main 的完整架构
+核心链路：
 
 ```text
-                         Tensor API
-                             │
-                             ▼
-                    Storage-backed Tensor
-              shape / stride / storage_offset
-                             │
-                             ▼
-                       logical operator
-                             │
-                             ▼
-                     Operator Schema
-                             │
-                             ▼
-                        Dispatcher
-                             │
-                    DispatchKeySet
-                 ┌───────────┼───────────┐
-                 ▼           ▼           ▼
-             Autograd      NoGrad       CPU
-                 │           │           │
-                 └──── redispatch ───────┘
-                             │
-                             ▼
-                        NumPy kernel
-                             │
-                             ▼
-                     Tensor / GradFn
-
-Module / Parameter ──► nn ──► Loss
-                         │
-                         ▼
-                      Optimizer
-                         │
-                      Scheduler
-
-Dataset → Sampler → BatchSampler → DataLoader → Tensor batches
-```
-
-## 3. v0.5 当前重点
-
-当前首批经过 Dispatcher 的 operator：
-
-```text
-aten::add.Tensor
-aten::mul.Tensor
-aten::matmul.default
-aten::relu.default
-aten::sum.default
-```
-
-典型 requires-grad 调用：
-
-```text
-x * y
-  ↓
-Tensor.__mul__
-  ↓
-aten::mul.Tensor
-  ↓
-DispatchKeySet{Autograd, CPU}
-  ↓
+nn.Conv2d
+    ↓
+functional.conv2d
+    ↓
+aten::conv2d.default
+    ↓
+Dispatcher
+    ↓
+DispatchKeySet {Autograd, CPU}
+    ↓
 Autograd wrapper
-  ↓ redispatch(remove Autograd)
-CPU kernel
-  ↓
-attach MulBackward
+    ↓ redispatch(remove Autograd)
+CPU Conv2d kernel
+    ↓
+Tensor + Conv2dOpBackward
 ```
 
-因此 CPU kernel 不再需要知道 dynamic graph policy。
+CPU kernel 仍然只负责数值计算，不知道 Module、Optimizer 或动态图策略。
 
-## 4. 从零开始的推荐学习顺序
+## 2. 本版本新增能力
 
-### 第一阶段 — v0.1：Autograd
+### Conv2d
 
-```text
-mini_pytorch/autograd.py
-mini_pytorch/tensor.py
-mini_pytorch/ops.py
-mini_pytorch/nn/module.py
-mini_pytorch/optim/optimizer.py
+```python
+from mini_pytorch import Tensor, nn
+
+layer = nn.Conv2d(
+    1,
+    8,
+    kernel_size=3,
+    padding=1,
+    implementation="im2col",
+)
+
+x = Tensor(...)
+y = layer(x)
 ```
 
-理解：
+支持：
 
-```text
-Function.apply
-Context
-GradFn
-DAG backward
-broadcast gradient reduction
-Parameter registration
+- NCHW input
+- OIHW weight
+- bias
+- stride
+- padding
+- dilation
+- `groups=1`
+- input / weight / bias backward
+- readable nested-loop reference kernel
+- im2col + matrix multiplication kernel
+
+`groups != 1` 会显式报错，而不是假装支持。
+
+### MaxPool2d
+
+```python
+pool = nn.MaxPool2d(2, stride=2)
+y = pool(x)
 ```
 
-### 第二阶段 — v0.2：Optimization
+backward 只把上游梯度传回每个 pooling window 的最大值位置。
 
-```text
-mini_pytorch/optim/optimizer.py
-mini_pytorch/optim/sgd.py
-mini_pytorch/optim/adam.py
-mini_pytorch/optim/lr_scheduler.py
+### Dropout
+
+```python
+dropout = nn.Dropout(0.2, seed=42)
+
+model.train()
+y = dropout(x)
+
+model.eval()
+y = dropout(x)  # identity
 ```
 
-理解 parameter groups、optimizer state、momentum、Adam moments 和 scheduler lifecycle。
-
-### 第三阶段 — v0.3：Data pipeline
+训练使用 inverted dropout：
 
 ```text
-mini_pytorch/data/dataset.py
-mini_pytorch/data/sampler.py
-mini_pytorch/data/dataloader.py
-mini_pytorch/data/mnist.py
-examples/06_mnist_mlp.py
+mask / (1-p)
 ```
 
-理解 Dataset / Sampler / BatchSampler / collate 的职责分离。
+因此 eval 不需要额外缩放。
 
-### 第四阶段 — v0.4：Tensor memory model
+### BatchNorm1d / BatchNorm2d
 
-```text
-mini_pytorch/storage.py
-mini_pytorch/tensor.py
-tests/test_storage.py
-docs/TENSOR_MEMORY.md
-examples/07_tensor_memory.py
+```python
+bn = nn.BatchNorm2d(8)
 ```
 
-理解 Storage、stride、offset、view、reshape、contiguous、alias 和 inplace version safety。
-
-### 第五阶段 — v0.5：Dispatcher
+明确区分：
 
 ```text
-mini_pytorch/dispatcher.py
-        ↓
+weight / bias
+    ↓
+Parameter
+    ↓
+Optimizer 会更新
+
+running_mean / running_var / num_batches_tracked
+    ↓
+Buffer
+    ↓
+进入 state_dict，但不进入 parameters()
+```
+
+这是理解真实 `nn.Module` 状态管理非常重要的一层。
+
+## 3. Conv2d 为什么保留两套 kernel
+
+### reference
+
+```text
+N
+↓
+C_out
+↓
+H_out
+↓
+W_out
+↓
+C_in
+↓
+K_h
+↓
+K_w
+```
+
+优点：每一个索引关系都看得见。
+
+### im2col
+
+```text
+sliding windows
+      ↓
+    im2col
+      ↓
+(N*H_out*W_out, C_in*K_h*K_w)
+      ↓
+matrix multiplication
+      ↓
+reshape / transpose
+      ↓
+NCHW output
+```
+
+测试要求：
+
+```text
+reference output == im2col output
+```
+
+因此优化不会替代教学基线。
+
+## 4. 新增核心文件
+
+```text
+mini_pytorch/
+├── kernels.py                 # Conv/Pool CPU numerical kernels
+├── nn_ops.py                  # Conv2d/MaxPool2d Autograd definitions
+├── operator_registry.py       # Dispatcher registration
+├── functional.py              # conv2d/max_pool2d/dropout/batch_norm
+└── nn/
+    ├── conv.py                # nn.Conv2d
+    ├── pooling.py             # nn.MaxPool2d
+    ├── dropout.py             # nn.Dropout
+    └── batchnorm.py           # BatchNorm1d / BatchNorm2d
+
+tests/
+└── test_cnn_ops.py
+
+docs/
+└── CNN_OPERATORS.md
+
+examples/
+└── 09_cnn_mnist.py
+```
+
+## 5. 推荐阅读顺序
+
+```text
 mini_pytorch/kernels.py
+        ↓
+mini_pytorch/nn_ops.py
         ↓
 mini_pytorch/operator_registry.py
         ↓
-mini_pytorch/tensor.py
+mini_pytorch/functional.py
         ↓
-mini_pytorch/ops.py
+mini_pytorch/nn/conv.py
+mini_pytorch/nn/pooling.py
+mini_pytorch/nn/dropout.py
+mini_pytorch/nn/batchnorm.py
         ↓
-tests/test_dispatcher.py
+tests/test_cnn_ops.py
         ↓
-docs/DISPATCHER.md
+docs/CNN_OPERATORS.md
         ↓
-examples/08_dispatcher.py
+examples/09_cnn_mnist.py
 ```
 
-重点理解：
+建议重点追踪一次：
 
-```text
-schema != kernel
-DispatchKeySet
-priority
-fallback
-redispatch
-Autograd wrapper
-backend kernel
+```python
+out = nn.Conv2d(...)(x)
+loss = out.sum()
+loss.backward()
 ```
 
-## 5. 快速运行
+然后回答：
 
-要求 Python 3.10+。
+1. 参数在哪里？
+2. logical operator 在哪里？
+3. Dispatcher 如何决定 Autograd？
+4. Autograd wrapper 保存了什么？
+5. 为什么要 redispatch？
+6. CPU kernel 为什么不需要知道 `requires_grad`？
+7. backward 如何得到 dInput / dWeight / dBias？
+
+## 6. 测试
 
 ```bash
 pip install -e .
 python -m unittest discover -s tests -v
 ```
 
-运行当前 Dispatcher 教学示例：
-
-```bash
-python examples/08_dispatcher.py
-```
-
-运行 Tensor memory 示例：
-
-```bash
-python examples/07_tensor_memory.py
-```
-
-查看 MNIST 训练入口：
-
-```bash
-python examples/06_mnist_mlp.py --help
-```
-
-## 6. 当前测试基线
-
-v0.5 release candidate 和 frozen branch 均已经通过 GitHub Actions 全量回归：
+当前核心实现 CI：
 
 ```text
-80 tests
+Ran 90 tests
 OK
 ```
 
-覆盖：
+新增覆盖：
 
-- dynamic Autograd
-- classification
-- Dataset/DataLoader/MNIST
-- optimizers
-- LR schedulers
-- Storage / stride / views
-- inplace version safety
-- operator schema / registry
-- CPU / Autograd / NoGrad dispatch
-- redispatch and error paths
+- Conv2d known-value forward
+- reference vs im2col equivalence
+- finite-difference input gradient
+- finite-difference weight gradient
+- finite-difference bias gradient
+- Conv2d Dispatcher Autograd routing
+- unsupported groups error
+- MaxPool2d forward/backward
+- Dropout train/eval/seed
+- BatchNorm Parameter vs Buffer
+- BatchNorm train/eval running stats
+- CNN end-to-end optimizer step
 
-## 7. 当前刻意没有实现
+## 7. MNIST CNN
 
-为了保持“一版一个核心 mental model”，main 当前还没有：
+查看参数：
 
-- Conv2d / MaxPool2d
-- BatchNorm / Dropout 完整 operator stack
-- real CUDA/device backend
-- `.to(device)`
-- multiprocessing DataLoader
-- advanced Autograd graph lifetime
-- DDP
-- Dynamo-like graph capture
-- AOTAutograd-like lowering
-- Inductor-like kernel fusion
+```bash
+python examples/09_cnn_mnist.py --help
+```
 
-这些内容按照 [`Plan.md`](./Plan.md) 逐版本推进。
+推荐先跑教学规模：
 
-## 8. 下一版本：v0.6
+```bash
+python examples/09_cnn_mnist.py \
+  --epochs 2 \
+  --train-limit 1000 \
+  --test-limit 300 \
+  --implementation im2col
+```
 
-下一步不应该直接跳到 CUDA，而是先利用刚完成的 Dispatcher 承载更复杂的神经网络 operator：
+输出：
 
 ```text
-Conv2d reference kernel
-       ↓
-Dispatcher registration
-       ↓
-Autograd wrapper
-       ↓
-Conv2d backward
-       ↓
-MaxPool2d
+runs/mnist-cnn/<timestamp>/
+├── config.json
+├── train.log
+├── metrics.csv
+├── loss_curve.png
+├── accuracy_curve.png
+├── best_model.npz
+└── last_model.npz
+```
+
+完整 60,000 / 10,000 MNIST 也可以通过：
+
+```bash
+--train-limit 0 --test-limit 0
+```
+
+但本项目 kernel 是教学 NumPy 实现，不应把它当成性能版 PyTorch。
+
+## 8. CNN 示例结构
+
+```text
+N×1×28×28
+   ↓
+Conv2d(1 → 8, 3×3)
+   ↓
+BatchNorm2d(8)
+   ↓
+ReLU
+   ↓
+MaxPool2d(2)
+   ↓
+Conv2d(8 → 16, 3×3)
+   ↓
+ReLU
+   ↓
+MaxPool2d(2)
+   ↓
+Flatten
+   ↓
 Dropout
-BatchNorm
-       ↓
-CNN MNIST
+   ↓
+Linear(16*7*7 → 10)
+   ↓
+CrossEntropyLoss
 ```
 
-这样可以验证 v0.5 的 Operator/Dispatcher 架构是否真的能承载非平凡算子，而不只是 `add/mul` demo。
-
-## 9. 项目开发规则
-
-继续开发前先阅读：
+训练继续复用旧版本能力：
 
 ```text
-Agents.md
-Plan.md
-version.md
+Dataset / DataLoader     ← v0.3
+AdamW / Scheduler        ← v0.2
+Storage / version safety ← v0.4
+Dispatcher               ← v0.5
+CNN operators            ← v0.6
 ```
 
-核心原则始终是：
+## 9. 本版本刻意不做什么
 
-> **main 保持最新；版本分支保持可学习；每个版本只引入一个主要架构 mental model。**
+v0.6 不实现：
+
+- CUDA
+- `.to(device)`
+- grouped/depthwise Conv2d
+- ConvTranspose
+- adaptive pooling
+- mixed precision
+- production kernel autotuning
+- distributed training
+- graph compiler
+
+这些不是遗漏，而是版本边界。
+
+## 10. 与上一版的核心差异
+
+```text
+v0.5
+Tensor op
+  ↓
+Dispatcher
+  ↓
+simple CPU kernels
+
+          ↓ v0.6 adds
+
+v0.6
+nn.Module
+  ↓
+functional NN operator
+  ↓
+Dispatcher
+  ↓
+Autograd wrapper
+  ↓
+non-trivial CPU kernels
+  ↓
+CNN training
+```
+
+一句话：
+
+> **v0.5 证明 Dispatcher 能路由 operator；v0.6 证明这个架构能承载真正的神经网络算子。**
+
+## 11. 下一版本
+
+`v0.7` 将进入 **Device / Backend abstraction**：
+
+```text
+Tensor / Storage
+      ↓
+Device metadata
+      ↓
+Dispatcher
+   ┌────┴────┐
+   ▼         ▼
+ CPU       accelerator backend
+```
+
+目标是解释：为什么真实框架不能靠在每个 Tensor 方法里堆 `if device == ...` 来支持多后端。
