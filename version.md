@@ -1,284 +1,228 @@
-# mini-pytorch v0.7
+# mini-pytorch v0.8
 
 ## 1. Version identity
 
-- **Branch:** `v0.7`
-- **Previous version:** `v0.6`
-- **Theme:** Device / Backend abstraction
-- **Status:** **frozen historical learning snapshot**
-- **Package version:** `0.7.0`
-- **Validated regression baseline:** **103/103 tests passed**
+- **Branch:** `v0.8`
+- **Previous version:** `v0.7`
+- **Theme:** Advanced Autograd Engine
+- **Status:** active development
+- **Target package version:** `0.8.0`
+- **Starting regression baseline:** `103/103 tests passed`
 
-v0.7 answers:
+v0.8 answers:
 
-> How can Tensor allocation and operator execution carry explicit device/backend identity without scattering `if device == ...` throughout the framework?
+> How does an Autograd engine manage graph lifetime, repeated backward execution, retained gradients and hooks instead of merely traversing a permanent DAG?
 
-## 2. Core difference from v0.6
+## 2. Core difference from v0.7
 
-v0.6 established:
+v0.7 completed placement and backend routing:
 
 ```text
-Module → functional op → Dispatcher → Autograd wrapper → CPU kernel
+Tensor / Storage / Device
+          ↓
+       Dispatcher
+      CPU / EDU
 ```
 
-v0.7 adds placement:
+v0.8 deepens the execution policy above those backends:
 
 ```text
-Tensor
-  ├── shape / stride / dtype
-  └── device
-       ↓
-Storage
-  └── backend-owned allocation
-       ↓
-Dispatcher
-  ├── CPU
-  └── EDU simulated backend
+forward graph
+     ↓
+GradFn / Context
+     ↓
+Autograd Engine
+ ┌────┼───────────────┐
+ ▼    ▼               ▼
+VJP  graph lifetime  hooks
+ │    retain_graph    │
+ ▼                    ▼
+leaf grad       retained non-leaf grad
 ```
 
-`edu` is a deterministic educational backend that uses host NumPy memory internally. It exists to validate multi-backend architecture on ordinary CI and is not CUDA/GPU support.
+CPU/EDU placement remains orthogonal to the engine.
 
-## 3. Implemented mechanisms
+## 3. Planned mechanisms
 
-### Device
+### 3.1 Explicit Autograd Engine
 
-- immutable `Device` value object
-- `cpu` / `edu`
-- optional non-negative index syntax
-- equality/hash/string representation
-- validation
+Move backward traversal out of `Tensor.backward()` into a dedicated engine module.
 
-### Backend registry
+Responsibilities:
 
-- `Backend` abstraction
-- `allocate(size, dtype)`
-- `from_numpy(array)`
-- `to_numpy(allocation)`
-- `NumPyBackend`
-- `EducationalBackend`
-- `backend_for()` / `list_backends()`
+- topological traversal;
+- transient local gradient accumulation;
+- Tensor hooks;
+- leaf/non-leaf gradient materialization;
+- backward-function invocation;
+- saved-state release policy.
 
-### Storage
+`Tensor.backward()` should become a thin public entry point.
 
-Storage now owns:
+### 3.2 Graph lifetime
+
+`Context` gains explicit lifecycle state.
+
+Default backward:
 
 ```text
-Device
-Backend
-backend-owned allocation
-VersionCounter
+use backward state
+      ↓
+release saved state
+      ↓
+second reuse fails clearly
 ```
 
-and exposes `.device` / `.backend`.
+Release must preserve Tensor values, leaves and unrelated graphs.
 
-### Tensor placement
+### 3.3 `retain_graph`
 
-- Tensor constructor accepts `device=`
-- `.device`
-- repr includes device
-- views preserve Storage/device
-- direct `Function.apply` outputs preserve common input device
-- mixed-device direct Function inputs fail
-- scalar promotion follows owning Tensor device
+Support:
 
-### Tensor.to
-
-Semantics:
-
-```text
-same device + copy=False → same Tensor
-same device + copy=True  → new Storage
-cross-device             → new target Storage
+```python
+loss.backward(retain_graph=True)
+loss.backward()
 ```
 
-Cross-device transfer materializes logical values and breaks aliasing.
+The first call preserves backward state; the second may reuse it and then release it.
 
-When grad mode is enabled, transfer attaches an identity-gradient CopyToDevice node so gradients flow back to the source Tensor.
+`retain_graph` does not reset `.grad` accumulation.
 
-### Device-aware Dispatcher
+### 3.4 Non-leaf `retain_grad()`
 
-New backend key:
+Default:
 
 ```text
-DispatchKey.EDU
+non-leaf gradient = transient engine value
+Tensor.grad       = None
 ```
 
-Routes:
+After:
 
-```text
-CPU + grad  → {Autograd, CPU}
-EDU + grad  → {Autograd, EDU}
-CPU no_grad → {NoGrad, CPU}
-EDU no_grad → {NoGrad, EDU}
+```python
+intermediate.retain_grad()
 ```
 
-Mixed-device Tensor operands fail before backend kernel execution.
+its gradient is copied/accumulated into `intermediate.grad`.
 
-### Backend registrations
+### 3.5 Tensor gradient hooks
 
-CPU and EDU registrations exist for:
+Support:
 
-- add
-- mul
-- matmul
-- relu
-- sum
-- conv2d
-- max_pool2d
-
-The educational backend intentionally reuses NumPy numerical implementations while exercising a distinct backend route.
-
-### Module.to
-
-- recursively moves Parameters
-- recursively moves Buffers
-- recursively moves child Modules
-- preserves registered Parameter object identity
-- Parameters remain leaves
-
-### Functional device inheritance
-
-- implicit Conv2d bias is created on weight.device
-- Dropout mask is created on input.device
-- BatchNorm validates Parameter/Buffer device consistency
-
-## 4. New files
-
-```text
-mini_pytorch/device.py
-mini_pytorch/backend.py
-tests/test_device_backend.py
-docs/DEVICE_BACKEND.md
-examples/10_device_backend.py
+```python
+handle = tensor.register_hook(fn)
+handle.remove()
 ```
 
-Major modified files:
+Hooks run in registration order. A hook may:
+
+- return `None` to observe only;
+- return a replacement gradient of the same shape to transform gradient flow.
+
+### 3.6 Custom Function workflow
+
+Make `Function` / `Context` public teaching APIs and add a complete custom operation example proving:
+
+- forward;
+- saved tensors;
+- backward VJP;
+- version safety;
+- graph release;
+- CPU and EDU placement preservation.
+
+### 3.7 Higher-order boundary
+
+Do **not** claim full higher-order gradients.
+
+Current backward formulas return NumPy arrays, so `create_graph=True` will explicitly raise `NotImplementedError` and documentation will explain what must change before true differentiable backward is possible.
+
+## 4. Planned source changes
+
+New:
 
 ```text
-mini_pytorch/storage.py
-mini_pytorch/tensor.py
+mini_pytorch/autograd_engine.py
+tests/test_autograd_engine.py
+docs/AUTOGRAD_ENGINE.md
+examples/11_autograd_engine.py
+```
+
+Major modifications:
+
+```text
 mini_pytorch/autograd.py
-mini_pytorch/dispatcher.py
-mini_pytorch/operator_registry.py
-mini_pytorch/functional.py
-mini_pytorch/nn/module.py
+mini_pytorch/tensor.py
 mini_pytorch/__init__.py
 pyproject.toml
-tests/test_dispatcher.py
 README.md
 ```
 
-## 5. Validation
+## 5. Compatibility invariants
 
-Validated release-candidate commit:
+v0.8 must preserve:
 
-```text
-500debd4769108d1739b8afd6888fcd116fe5a1d
-```
+- v0.4 saved-version/inplace safety;
+- v0.5 Dispatcher Autograd wrappers;
+- v0.7 CPU/EDU placement;
+- device-transfer backward;
+- leaf gradient accumulation;
+- optimizer/data/CNN regressions.
 
-GitHub Actions environment:
+Autograd Engine must not contain backend-specific numerical branches.
 
-```text
-Ubuntu 24.04
-Python 3.11.17
-NumPy 2.4.6
-```
+## 6. Required tests
 
-Result:
+At minimum:
 
-```text
-Ran 103 tests in 0.663s
-OK
-```
+- first backward succeeds;
+- second backward after release fails;
+- `retain_graph=True` enables reuse;
+- final non-retained backward releases graph;
+- shared nodes release safely once;
+- non-leaf grad absent by default;
+- `retain_grad()` captures correct gradient;
+- retained gradients accumulate across retained executions;
+- hooks observe gradients;
+- hook replacement modifies upstream gradient;
+- multiple hooks run in order;
+- hook handle removal works;
+- invalid hook gradient shape fails clearly;
+- custom Function gradient correctness;
+- custom Function saved-state release/version safety;
+- CPU and EDU engine semantics match;
+- `create_graph=True` raises explicitly;
+- complete old regression stays green.
 
-v0.7-specific coverage includes:
+## 7. Explicit non-goals
 
-- Device parse/equality/hash/errors
-- backend registry/allocation
-- Storage.device/backend
-- Tensor.device
-- same-device no-op/copy transfer
-- cross-device copy and alias separation
-- differentiable device transfer
-- CPU vs EDU dispatcher selection
-- Autograd/NoGrad routing above EDU
-- mixed-device errors
-- scalar promotion on EDU
-- direct Function.apply device preservation
-- Module.to Parameter/Buffer movement
-- Conv2d and MaxPool2d execution on EDU
+Do not add in v0.8:
 
-## 6. Definition of Done
+- true second derivatives / full `create_graph`;
+- parallel Autograd workers;
+- CUDA stream-aware engine scheduling;
+- anomaly detection;
+- forward-mode AD;
+- DDP gradient buckets;
+- compiler graph capture.
 
-- [x] Device construction/equality/validation
-- [x] Tensor and Storage expose device identity
-- [x] backend allocation boundary is explicit
-- [x] CPU behavior remains compatible
-- [x] Dispatcher inference uses backend identity
-- [x] same operator API selects CPU vs EDU registration
-- [x] mixed-device operations fail clearly
-- [x] `.to()` no-op/copy/cross-device semantics are documented and tested
-- [x] transfer preserves Autograd connectivity
-- [x] views lose aliasing after cross-device transfer
-- [x] direct Function.apply operators preserve device
-- [x] Module.to moves Parameters/Buffers
-- [x] Conv2d/MaxPool work through EDU route
-- [x] full regression suite passes
-- [x] architecture docs exist
-- [x] educational example exists
-- [x] package version is `0.7.0`
-- [x] branch ready for exact final-head CI and integration into main
+## 8. Definition of Done
 
-## 7. Recommended reading order
+Before freezing v0.8:
 
-```text
-mini_pytorch/device.py
-mini_pytorch/backend.py
-mini_pytorch/storage.py
-mini_pytorch/tensor.py
-mini_pytorch/dispatcher.py
-mini_pytorch/operator_registry.py
-mini_pytorch/nn/module.py
-tests/test_device_backend.py
-docs/DEVICE_BACKEND.md
-examples/10_device_backend.py
-```
+- [ ] explicit Engine owns backward traversal
+- [ ] Context lifecycle/release implemented
+- [ ] `retain_graph` implemented
+- [ ] non-leaf `retain_grad()` implemented
+- [ ] hooks + removable handles implemented
+- [ ] custom Function teaching path documented/tested
+- [ ] higher-order limitation explicit
+- [ ] CPU and EDU tests pass
+- [ ] all previous regression tests pass
+- [ ] README/docs/example updated
+- [ ] package version is `0.8.0`
+- [ ] exact final v0.8 branch-head CI is green
+- [ ] frozen validated tree is integrated into `main`
 
-## 8. Explicit non-goals
+## 9. Next version
 
-v0.7 intentionally does not implement:
-
-- real CUDA
-- CuPy
-- asynchronous copies
-- pinned memory
-- streams/events
-- mixed precision
-- caching allocator
-- distributed execution
-- compiler graph capture
-
-## 9. Learning goals
-
-After v0.7 the reader should be able to explain:
-
-1. Device vs Backend vs Storage vs DispatchKey;
-2. why Tensor.device belongs in metadata but allocation belongs to a backend;
-3. why cross-device transfer must allocate new Storage;
-4. why transfer breaks aliasing but can preserve gradient connectivity;
-5. why mixed-device math should fail instead of implicitly copy;
-6. why Autograd is above backend dispatch rather than embedded inside kernels;
-7. why a simulated second backend is enough to validate architecture before CUDA.
-
-## 10. Next version
-
-`v0.8` should focus on **Advanced Autograd Engine** concepts:
-
-```text
-graph lifetime
-retain_grad
-hooks
-retain_graph
-custom Function
-higher-order-gradient foundations
-```
+After v0.8, `v0.9` should focus on **Training Runtime / Serialization / Reproducibility**: unified model+optimizer+scheduler+RNG checkpoints, epoch/global-step state and deterministic resume.
