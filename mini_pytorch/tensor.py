@@ -62,7 +62,11 @@ class Tensor:
         name: Optional[str] = None,
     ) -> None:
         array = _as_array(data, dtype=dtype)
-        contiguous = np.ascontiguousarray(array)
+        # np.ascontiguousarray() promotes a 0-D ndarray to shape (1,), which
+        # would silently change scalar Tensor semantics. np.array(..., order="C")
+        # preserves the original dimensionality while still materializing a
+        # canonical contiguous allocation for Storage.
+        contiguous = np.array(array, copy=True, order="C", subok=False)
         self._storage = Storage(contiguous, copy=True)
         self._shape = tuple(contiguous.shape)
         self._strides = contiguous_strides(self._shape)
