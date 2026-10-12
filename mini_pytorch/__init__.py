@@ -19,6 +19,22 @@ from . import functional
 from . import nn
 from . import optim
 from . import data
+from . import runtime
+from .runtime import (
+    CHECKPOINT_SCHEMA_VERSION,
+    CheckpointError,
+    CheckpointState,
+    TrainingState,
+    collect_checkpoint_state,
+    get_rng_state,
+    load_checkpoint,
+    load_checkpoint_state,
+    manual_seed,
+    restore_checkpoint_state,
+    save_checkpoint,
+    save_checkpoint_state,
+    set_rng_state,
+)
 
 register_builtin_operators()
 
@@ -47,5 +63,19 @@ __all__ = [
     "nn",
     "optim",
     "data",
+    "runtime",
+    "manual_seed",
+    "get_rng_state",
+    "set_rng_state",
+    "TrainingState",
+    "CheckpointState",
+    "CHECKPOINT_SCHEMA_VERSION",
+    "CheckpointError",
+    "collect_checkpoint_state",
+    "save_checkpoint_state",
+    "load_checkpoint_state",
+    "restore_checkpoint_state",
+    "save_checkpoint",
+    "load_checkpoint",
 ]
-__version__ = "0.8.0"
+__version__ = "0.9.0"
