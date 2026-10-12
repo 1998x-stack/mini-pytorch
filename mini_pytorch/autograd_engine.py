@@ -71,6 +71,14 @@ class AutogradEngine:
             if node._grad_fn is not None:
                 node._grad_fn.ctx.ensure_available()
 
+    @staticmethod
+    def _release_graph(topo: list["Tensor"]) -> None:
+        """Release every reachable GradFn context once after successful execution."""
+
+        for node in topo:
+            if node._grad_fn is not None:
+                node._grad_fn.release()
+
     def backward(
         self,
         output: "Tensor",
@@ -141,8 +149,8 @@ class AutogradEngine:
                     else local_grads[key] + parent_grad
                 )
 
-            if not retain_graph:
-                grad_fn.release()
+        if not retain_graph:
+            self._release_graph(topo)
 
 
 engine = AutogradEngine()
