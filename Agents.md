@@ -1,249 +1,22 @@
-# Agents.md — mini-pytorch Development Contract
+# Agents.md — mini-pytorch v0.9 Branch Contract
 
-> **Mandatory for every future iteration:** read this file before changing code, tests, documentation, branches, version scope, or architecture.
->
-> This is the canonical engineering contract for `main`. Version branches carry branch-specific `Agents.md` files.
+> Mandatory reading before changing the `v0.9` branch.
 
-## 1. Repository mission
+## Branch identity
 
-mini-pytorch is an educational, NumPy-first framework for understanding the mechanisms behind real PyTorch one architectural layer at a time.
+- Branch: `v0.9`
+- Previous version: `v0.8`
+- Primary mental model: **Training Runtime / Serialization / Reproducibility**
+- Status: active development
+- Starting validated baseline: `123/123 tests passed`
 
-Priorities:
+## 1. Central question
 
-```text
-architectural clarity
-      ↓
-correctness + explicit invariants
-      ↓
-readable reference implementation
-      ↓
-tests that demonstrate mechanisms
-      ↓
-conceptual mapping to PyTorch
-      ↓
-performance only after the model is clear
-```
+> What exact state must be captured, validated and restored so a stopped training run can continue with the same future behavior?
 
-Do not optimize for API completeness and do not copy upstream PyTorch source.
+The version is about training-state architecture, not opaque object dumping.
 
-## 2. Mandatory reading order
-
-### On `main`
-
-Read:
-
-1. `Agents.md`
-2. `Plan.md`
-3. `version.md`
-4. relevant architecture docs
-5. tests for the subsystem
-6. current implementation
-
-### On a version branch
-
-Read:
-
-1. branch `Agents.md`
-2. branch `version.md`
-3. relevant docs/tests/source
-
-Never assume a historical branch should contain later-version functionality.
-
-## 3. Branch invariant
-
-`main` must always be the newest integrated, validated state.
-
-```text
-latest main
-   ↓
-create vX.Y
-   ↓
-write branch version.md + Agents.md first
-   ↓
-implement one major mental model
-   ↓
-full tests + docs + example
-   ↓
-exact final branch-head CI green
-   ↓
-freeze version branch
-   ↓
-integrate validated tree into main
-   ↓
-restore canonical main docs
-   ↓
-advance Plan.md
-```
-
-Forbidden:
-
-```text
-version branch contains newer validated framework code
-while main remains stale
-```
-
-## 4. Version sequence
-
-```text
-v0.1  Tensor / Dynamic Autograd                         ✅
-v0.2  Optimizer state / LR Scheduler                   ✅
-v0.3  Dataset / Sampler / DataLoader / MNIST           ✅
-v0.4  Storage / stride / views / version safety        ✅
-v0.5  Operator Registry / Dispatcher / Redispatch      ✅
-v0.6  Neural-network operator stack / CNN              ✅
-v0.7  Device / Backend abstraction                     ✅
-v0.8  Advanced Autograd Engine                         ✅
-v0.9  Training Runtime / Serialization / Reproducibility ← next
-```
-
-One version should introduce one dominant mental model.
-
-## 5. Current integrated architecture
-
-```text
-                             Tensor
-                shape / stride / dtype / device
-                               │
-                               ▼
-                             Storage
-                  backend-owned allocation
-                     + VersionCounter
-                               │
-                               ▼
-                        logical operator
-                               │
-                               ▼
-                           Dispatcher
-                    policy keys + backend keys
-             ┌─────────────────┼─────────────────┐
-             ▼                 ▼                 ▼
-          Autograd           NoGrad        CPU / EDU backend
-             │                                   │
-             └────────── redispatch ─────────────┘
-                               │
-                               ▼
-                         Tensor / GradFn
-                               │
-                               ▼
-                         Context graph
-                               │
-                               ▼
-                         AutogradEngine
-             ┌─────────────────┼─────────────────┐
-             ▼                 ▼                 ▼
-       local grad flow    graph lifetime      hooks
-                         retain_graph
-                               │
-                               ▼
-                     persistent requested grads
-
-nn.Module → functional NN op ───────────────► Dispatcher
-Dataset → Sampler → BatchSampler → DataLoader
-Module / Parameter → Optimizer → LR Scheduler
-```
-
-`edu` is a deterministic simulated backend using host NumPy arrays. It exists to teach backend identity/routing and must never be represented as CUDA or GPU acceleration.
-
-## 6. Architecture rules
-
-- separate policy from mechanism;
-- avoid circular core imports;
-- backend kernels must not depend on Module/Optimizer/DataLoader/runtime checkpoint code;
-- Autograd policy must not be duplicated inside backend kernels;
-- preserve Storage/stride/view/version invariants;
-- high-level `nn.Module` owns state/configuration, not backend loops;
-- functional operators bridge Modules to logical operators;
-- backend selection belongs in Device/Backend/Dispatcher, not scattered `if device` conditions;
-- mixed-device operations fail explicitly unless the API is a transfer operation;
-- Autograd Engine owns transient backward execution state; Tensor owns persistent user-visible grad/hook intent;
-- graph lifetime, retained grads and hooks must remain backend-agnostic;
-- v0.9 persistence/runtime code must not be embedded into Tensor numerical operators or Autograd Engine traversal;
-- checkpoint loading must validate state instead of silently reshaping or dropping incompatible state.
-
-## 7. Conceptual PyTorch compatibility
-
-Prefer PyTorch-like boundaries when they improve transfer of understanding:
-
-- TensorImpl-like Storage + sizes + strides + offset + device metadata;
-- dynamic Function/GradFn/Context graph;
-- explicit Autograd Engine execution/lifetime policy;
-- leaf vs retained non-leaf gradients;
-- Tensor gradient hooks;
-- Module Parameters and Buffers;
-- Optimizer parameter groups/state;
-- Dataset/Sampler/DataLoader separation;
-- operator schema + Dispatcher + DispatchKey;
-- redispatch from policy wrappers to backend kernels;
-- explicit Device + backend-owned allocation;
-- next: complete training state + checkpoint/resume semantics.
-
-Implement original educational equivalents.
-
-## 8. Testing contract
-
-Every new subsystem should include, where applicable:
-
-- happy path;
-- invariant/property tests;
-- error-path tests;
-- numerical/reference validation;
-- integration test;
-- regression coverage for earlier versions.
-
-Full regression:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-Never claim a version is validated unless the exact reported code has passed the relevant suite. Before freeze, GitHub Actions must pass on the exact final version-branch head.
-
-Current integrated baseline:
-
-```text
-v0.8
-123 tests
-OK
-```
-
-## 9. Documentation contract
-
-When architecture/public API changes, review at minimum:
-
-```text
-version.md
-README.md
-Agents.md
-relevant docs/*
-relevant example
-Plan.md on main
-```
-
-Every version README must state:
-
-- version theme;
-- delta from previous version;
-- important source files;
-- recommended reading order;
-- quick run commands;
-- explicit non-goals;
-- next version.
-
-## 10. Historical branch rule
-
-A frozen version branch may receive only:
-
-- documentation corrections;
-- tests clarifying promised behavior;
-- narrowly scoped bug fixes inside that version boundary.
-
-Do not backport future subsystems.
-
-## 11. Runtime/reproducibility rule for v0.9
-
-The next version should treat training as a state machine rather than "model weights plus a loop".
-
-State categories must be explicit:
+## 2. Allowed scope
 
 ```text
 model state
@@ -251,58 +24,218 @@ optimizer state
 scheduler state
 RNG state
 training progress
-checkpoint schema/version metadata
+schema/version metadata
+       ↓
+CheckpointState
+       ↓
+serializer / loader
+       ↓
+deterministic resume
 ```
 
-Checkpoint serialization and state collection should be separate concerns.
+Allowed:
 
-Prefer transparent formats suitable for inspection; avoid opaque serialization when a small NPZ + JSON design is enough for the educational goal.
+- framework RNG utilities;
+- migration of framework-owned random initialization/stochastic behavior to that RNG where safe;
+- explicit `TrainingState`;
+- logical `CheckpointState`;
+- JSON + NPZ serialization;
+- strict validation and restore orchestration;
+- small state-validation improvements to Module/Optimizer/Scheduler if required;
+- deterministic resume tests/example/docs.
 
-Deterministic-resume claims require an integration test comparing uninterrupted training against save→reload→continue execution.
+## 3. Forbidden scope
 
-## 12. Performance and dependency rule
+Do not add:
 
-Prefer:
+- DDP / ProcessGroup / AllReduce;
+- distributed or sharded checkpoints;
+- remote storage backends;
+- asynchronous checkpoint workers;
+- full arbitrary mid-epoch DataLoader worker restoration;
+- real CUDA checkpoint runtime;
+- compiler graph serialization;
+- pickle as the primary educational format;
+- unrelated NN/operator expansion.
+
+## 4. Architecture boundary
+
+Persistence belongs above numerical execution:
 
 ```text
-readable reference
-   ↓
-correctness
-   ↓
-profile
-   ↓
-optimized educational path
+Tensor / Storage / Dispatcher / AutogradEngine
+                 ↑
+           no checkpoint code
+
+Module / Optimizer / Scheduler
+                 ↓
+             state_dict
+                 ↓
+             runtime/*
 ```
 
-Do not commit generated datasets, large logs, plots or checkpoints unless a tiny deterministic fixture is required by tests.
+Do not embed serialization logic in Tensor, kernels, Dispatcher or AutogradEngine.
 
-NumPy remains the reference numerical implementation. Future accelerator work must not make ordinary CPU CI impossible.
+## 5. RNG contract
 
-## 13. Definition of Done for a version
+The framework RNG must make this distinction explicit:
 
-A version can be frozen only when:
+```text
+manual_seed(S)
+→ starts a stream
 
-- primary mental model is explicit;
-- promised implementation is complete;
-- unit/invariant/error tests pass;
-- numerical/reference checks exist where relevant;
-- educational integration example exists;
-- `version.md` accurately records the delta;
-- version-specific `Agents.md` exists;
-- architecture docs are updated;
-- package imports cleanly;
-- exact final branch-head CI is green;
-- validated state is integrated into `main`;
-- next-version rationale is recorded in `Plan.md`.
+get_rng_state()
+→ captures current position
 
-## 14. Current main directive
+set_rng_state(state)
+→ resumes current position
+```
 
-`main` contains the completed and validated **v0.8 Advanced Autograd Engine** milestone.
+Restoring only a seed is not a valid checkpoint-resume implementation.
 
-The next version must be created from current `main` and should be **v0.9: Training Runtime / Serialization / Reproducibility**.
+Framework-owned randomness should use the framework RNG where practical. Explicit component-private RNGs may retain their own semantics, but deterministic-resume claims must clearly state which sources are captured.
 
-Central question:
+## 6. TrainingState contract
 
-> What exact state must be captured, validated and restored so that a stopped training run can continue with the same parameters, optimizer dynamics, learning-rate schedule, random choices and progress counters?
+Training progress is runtime position, not model state.
 
-v0.9 should build a checkpoint/runtime layer above existing Module/Optimizer/Scheduler/DataLoader mechanisms without pushing persistence logic into Tensor math or Autograd Engine execution.
+Required fields:
+
+```text
+epoch >= 0
+global_step >= 0
+batch_in_epoch >= 0
+```
+
+Optional metadata may include `best_metric`, `run_id`, and notes.
+
+v0.9 should document an exact resume boundary. Do not claim arbitrary DataLoader iterator restoration unless sampler/worker position is genuinely captured and tested.
+
+## 7. Checkpoint schema contract
+
+Required logical sections:
+
+```text
+schema_version
+framework_version
+model_state
+optimizer_state
+scheduler_state
+rng_state
+training_state
+metadata
+```
+
+Checkpoint data must not contain live Module/Parameter/Optimizer references.
+
+Strict loading must reject incompatible or missing state instead of silently dropping or reshaping it.
+
+## 8. Serialization contract
+
+Preferred format:
+
+```text
+checkpoint/
+├── metadata.json
+└── tensors.npz
+```
+
+Rules:
+
+- ndarray values are stored losslessly in NPZ;
+- structure and scalar metadata remain JSON-readable;
+- array references are deterministic;
+- schema version is validated before restoration;
+- malformed/missing files fail clearly;
+- writes should use a temporary staging location before publishing the checkpoint directory.
+
+## 9. Restore contract
+
+Use a deliberate order:
+
+```text
+parse + validate
+      ↓
+model.load_state_dict
+      ↓
+optimizer.load_state_dict
+      ↓
+scheduler.load_state_dict
+      ↓
+TrainingState
+      ↓
+set_rng_state LAST
+```
+
+RNG is restored last so construction of fresh objects does not change the future stream after resume.
+
+Serialized tensors are device-neutral NumPy values. Restoring into an already-configured CPU/EDU model must preserve that target device.
+
+## 10. Deterministic-resume proof
+
+Do not call v0.9 complete until CI proves:
+
+```text
+uninterrupted run
+==
+interrupted → save → fresh objects → load → continue
+```
+
+Compare at least:
+
+- post-resume losses;
+- model arrays;
+- optimizer state arrays/counters;
+- scheduler LR/state;
+- training counters;
+- next framework RNG draws.
+
+Use a tiny deterministic dataset/model so CI stays fast.
+
+## 11. Testing contract
+
+Full regression:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+New tests should cover:
+
+- RNG reproducibility/state restore;
+- TrainingState validation;
+- generic nested checkpoint serialization;
+- model/optimizer/scheduler restore;
+- target device preservation;
+- schema errors;
+- missing/corrupt files;
+- optimizer group mismatch;
+- scheduler presence mismatch;
+- deterministic resume.
+
+Exact final v0.9 branch-head GitHub Actions must be green before freeze.
+
+## 12. Documentation contract
+
+Before freeze update:
+
+```text
+README.md
+version.md
+Agents.md
+docs/TRAINING_RUNTIME.md
+examples/12_checkpoint_resume.py
+mini_pytorch/__init__.py
+pyproject.toml
+```
+
+## 13. Freeze rule
+
+When exact final branch HEAD is green:
+
+1. mark `version.md` frozen;
+2. mark this `Agents.md` frozen;
+3. do not modify framework code again;
+4. fast-forward validated v0.9 into `main`;
+5. restore canonical main README/Agents/Plan;
+6. advance roadmap to `v0.10 Distributed / DDP Concepts`.
