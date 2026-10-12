@@ -2,219 +2,86 @@
 
 > Canonical roadmap for `main`.
 >
-> **Invariant:** `main` is always the newest integrated project state. Version branches are readable learning snapshots. A completed version is validated, frozen, then integrated into `main` before the next version branch is created.
+> **Invariant:** `main` is always the newest integrated, validated state. Version branches are readable learning snapshots. A completed version is validated, frozen, then integrated into `main` before the next branch is created.
 
----
+## 1. Project purpose
 
-# 1. Project purpose
+mini-pytorch removes one layer of PyTorch “magic” at a time using readable Python/NumPy implementations.
 
-mini-pytorch is not trying to reproduce the entire PyTorch API. It exists to remove one layer of framework “magic” at a time with small, readable Python/NumPy implementations.
-
-The long-term learning path should answer:
+The roadmap follows architectural dependency order:
 
 ```text
-What is a Tensor?
+Tensor / Autograd
       ↓
-How does Autograd build and execute a graph?
+Module / Optimizer
       ↓
-How are parameters/modules/optimizers organized?
+Data pipeline
       ↓
-How does data become batches?
+Tensor memory model
       ↓
-How do Storage, stride and views work?
+Operator Dispatcher
       ↓
-Why does PyTorch need an operator Dispatcher?
+NN operator stack
       ↓
-How can multiple backends implement one operator API?
+Device / backend
       ↓
-How do advanced Autograd/runtime/distributed mechanisms work?
+Advanced Autograd/runtime
       ↓
-How does eager Python execution become compiled graphs/kernels?
+Distributed
+      ↓
+Compiler stack
 ```
 
-The project follows **architectural dependency order**, not feature popularity.
+## 2. Completed milestones
 
----
+### v0.1 — Eager Tensor + Dynamic Autograd ✅
 
-# 2. Reference architecture
+Core mental model:
 
 ```text
-Python Tensor / Module API
-            │
-            ▼
-    Tensor memory model
-Storage + shape + stride + offset
-            │
-            ▼
-      Operator system
- schema + registry + Dispatcher
-            │
-      ┌─────┴───────────┐
-      ▼                 ▼
- backend kernels      Autograd
- CPU / future accel   wrappers/nodes
-      │                 │
-      └──────┬──────────┘
-             ▼
-        NN operators
-             │
-             ▼
-      Optimizer / LR
-
-Dataset → Sampler → DataLoader
-             │
-             ▼
-       training runtime
-             │
-      ┌──────┴───────────┐
-      ▼                  ▼
- distributed          compiler
- DDP-like             graph capture
- collectives          lowering/fusion
+Tensor → Function → dynamic graph → backward → Parameter → Module → Optimizer
 ```
 
-mini-pytorch reproduces these **conceptual boundaries** with original educational code. Exact PyTorch source structure and edge-case parity are not goals.
+Implemented:
 
----
-
-# 3. Repository/version rules
-
-## `main`
-
-`main` is the newest integrated state and contains:
-
-- canonical `Plan.md`;
-- canonical `Agents.md`;
-- latest integrated `version.md`;
-- latest validated implementation.
-
-## Version branches
-
-Every `v0.x` / `v1.x` branch must contain:
-
-- `version.md` — identity, delta, validation and next boundary;
-- `Agents.md` — branch-specific scope contract;
-- tests for the new mechanism;
-- architecture documentation for new subsystems;
-- an educational example when appropriate.
-
-## Version lifecycle
-
-```text
-latest main
-    ↓
-create v0.x
-    ↓
-write version.md + branch Agents.md
-    ↓
-implement one major mechanism
-    ↓
-tests + error paths + integration example
-    ↓
-exact remote CI
-    ↓
-freeze version.md + Agents.md
-    ↓
-synchronize to main
-    ↓
-advance Plan.md
-    ↓
-create next version from newest main
-```
-
----
-
-# 4. Completed versions
-
-## v0.1 — Eager Tensor + dynamic Autograd MVP ✅
-
-### Learning question
-
-How can a small framework dynamically build a computation graph during forward execution and automatically propagate gradients backward?
-
-### Core mechanisms
-
-- Tensor / requires_grad / leaf grad accumulation
-- `Function`, `Context`, `GradFn`
-- reverse topological backward traversal
-- broadcasting-aware gradients
-- Parameter / Module registration
-- Linear / activations / Sequential
+- Tensor + `requires_grad`
+- reverse-mode autodiff
+- gradient accumulation
+- common differentiable operations
+- Module / Parameter / Linear / Sequential
 - MSELoss
 - SGD / Adam
-- state_dict basics
+- numerical gradcheck
 
-### Mental model
+### v0.2 — Optimizer State + LR Scheduler ✅
+
+Core mental model:
 
 ```text
-Tensor operation
-      ↓
-Function.forward
-      ↓
-GradFn node
-      ↓
-dynamic DAG
-      ↓
-reverse traversal
-      ↓
-Function.backward
+Parameter
+   ↓
+Optimizer state / parameter groups
+   ↓
+LR Scheduler
 ```
 
----
+Implemented:
 
-## v0.2 — Optimizer state + LR scheduling ✅
-
-### Learning question
-
-Why are model parameters, gradients, optimizer state and learning-rate state separate objects with different lifetimes?
-
-### Core mechanisms
-
-- Optimizer base + parameter groups
-- per-parameter optimizer state
-- SGD momentum / dampening / Nesterov
-- Adam / AdamW / Adamax / RMSprop / Adagrad
-- optimizer checkpoint state
-- scheduler base
+- richer SGD
+- Adam / AdamW / Adamax
+- RMSprop / Adagrad
+- optimizer state serialization
+- parameter groups
 - StepLR / MultiStepLR / ExponentialLR
 - CosineAnnealingLR / LinearLR / LambdaLR
 - ReduceLROnPlateau
 
-### Mental model
+### v0.3 — Dataset / Sampler / DataLoader + MNIST ✅
+
+Core mental model:
 
 ```text
-Parameter + grad
-      ↓
-Optimizer state
-      ↓
-parameter update
-      ▲
-      │
-Scheduler mutates group LR
-```
-
----
-
-## v0.3 — Data pipeline + MNIST classification ✅
-
-### Learning question
-
-Why does a framework separate data storage, index selection, batching and collation?
-
-### Core mechanisms
-
-```text
-Dataset
-   ↓
-Sampler
-   ↓
-BatchSampler
-   ↓
-DataLoader
-   ↓
-collate_fn
-   ↓
-Tensor batch
+Dataset → Sampler → BatchSampler → DataLoader → collate_fn → Tensor batch
 ```
 
 Implemented:
@@ -222,296 +89,202 @@ Implemented:
 - Dataset / TensorDataset
 - SequentialSampler / RandomSampler
 - BatchSampler
-- sampler-driven DataLoader
-- MNIST IDX parsing/downloading
-- Flatten
-- CrossEntropyLoss
-- MLP MNIST training path
-- Loguru logging
-- metrics CSV
-- loss/accuracy plotting
-- model checkpoints
+- DataLoader
+- MNIST IDX loader
+- Flatten / CrossEntropyLoss
+- end-to-end MNIST MLP training
+- logging / metrics / plots / model checkpoints
 
-### Deferred extensions
+### v0.4 — Tensor Memory Model ✅
 
-The following are useful data-ecosystem extensions but are **not prerequisites for the architectural sequence** and therefore do not block v0.4+:
-
-- Subset / random_split
-- SubsetRandomSampler / WeightedRandomSampler
-- explicit DataLoader iterator/fetcher classes
-- confusion matrix / prediction grid
-- richer resume-training utility
-- multiprocessing/prefetch/pinned-memory work
-
-These may be added later when their mechanism becomes a learning target.
-
----
-
-## v0.4 — Tensor memory model: Storage / stride / views ✅
-
-### Learning question
-
-How can multiple Tensor objects expose different shapes/layouts while sharing one allocation, and why does aliasing matter for Autograd?
-
-### Completed architecture
+Core mental model:
 
 ```text
-Storage
-├── flat allocation
-└── shared version counter
-       ▲
-       │
- ┌─────┴──────────┐
- │                │
-Tensor A        Tensor B
-shape           shape
-stride          stride
-offset          offset
+Storage + shape + stride + storage_offset + version counter
 ```
 
-### Core mechanisms
+Implemented:
 
-- explicit `Storage`
-- shape / stride / `storage_offset`
-- contiguous-stride generation
-- `is_contiguous()`
-- transpose / permute metadata views
-- basic slicing views, including negative stride
-- `view()` aliases-or-fails semantics
-- `reshape()` alias-or-copy semantics
-- `contiguous()` materialization
-- tracked `add_` / `mul_` / `copy_`
+- explicit Storage
+- view aliasing
+- transpose / permute / slicing
+- `view()` vs `reshape()`
+- `is_contiguous()` / `contiguous()`
+- inplace mutation
 - shared Storage version counter
-- saved-value version checks before backward
-- optimizer/state-loading version integration
-- correct 0-D scalar Tensor preservation
+- Autograd saved-version checks
 
-### Validation
+### v0.5 — Operator Registry + Dispatcher ✅
 
-Exact remote v0.4 implementation passed:
+Core mental model:
 
 ```text
-Ubuntu 24.04
-Python 3.11.17
-NumPy 2.4.6
-65 / 65 tests
-```
-
-### Key document
-
-```text
-docs/TENSOR_MEMORY.md
-```
-
----
-
-# 5. Current next version
-
-# v0.5 — Operator schema, registry and Dispatcher 🎯 NEXT
-
-## Why v0.5 must follow v0.4
-
-v0.4 established what a Tensor *is*. The next architectural problem is how Tensor operations are routed.
-
-Without a dispatcher, adding devices/backends tends to produce this anti-pattern:
-
-```python
-if tensor.device == "cpu":
-    ...
-elif tensor.device == "cuda":
-    ...
-if requires_grad:
-    ...
-```
-
-spread throughout Tensor methods.
-
-A dispatcher creates one routing boundary:
-
-```text
-Tensor.add(other)
-      ↓
-Operator schema
-      ↓
+Tensor API
+   ↓
+Operator Schema
+   ↓
 Dispatcher
-      ↓
+   ↓
 DispatchKeySet
-  ┌───┼──────────────┐
-  ▼   ▼              ▼
-CPU  Autograd    future accelerator
-kernel wrapper         kernel
+   ↓
+Autograd / NoGrad / CPU
+   ↓
+redispatch
 ```
 
-## v0.5.1 Operator schema
+Implemented:
 
-Implement:
-
-- `OperatorName` / namespace + name
 - `OperatorSchema`
-- simplified argument/return metadata
-- schema registry
-- duplicate-schema error
-- lookup/introspection API
-
-Target examples:
-
-```text
-mini::add.Tensor
-mini::mul.Tensor
-mini::matmul
-mini::relu
-mini::sum
-```
-
-## v0.5.2 Dispatch keys
-
-Educational initial keys:
-
-- `CPU`
-- `Autograd`
-- `NoGrad` or an equivalent grad-mode routing concept
-- reserved accelerator key for later work
-
-Implement:
-
+- operator/kernel registry
 - `DispatchKey`
 - `DispatchKeySet`
-- key priority
-- key removal for redispatch
+- dispatch priority
+- per-key fallbacks
+- redispatch
+- CPU numerical kernels
+- Autograd wrappers above backend kernels
+- NoGrad fallback
+- dispatched `add / mul / matmul / relu / sum`
+- dispatcher introspection and error paths
 
-## v0.5.3 Kernel registry
-
-Implement:
-
-- register kernel for `(operator, dispatch_key)`
-- query dispatch table
-- duplicate registration policy
-- missing-kernel error
-- optional fallback registration
-
-## v0.5.4 Dispatcher
-
-Implement:
-
-```text
-call operator
-    ↓
-compute key set
-    ↓
-select highest-priority implementation
-    ↓
-invoke kernel/wrapper
-    ↓
-optional redispatch with key removed
-```
-
-The redispatch concept is important because an Autograd wrapper should be able to do graph work and then call the lower backend implementation.
-
-## v0.5.5 Integrate a small operator subset
-
-Migrate only enough operators to prove the boundary:
-
-- add
-- mul
-- matmul
-- relu
-- sum
-
-Do not migrate every op immediately.
-
-## v0.5.6 Autograd routing demonstration
-
-Demonstrate conceptually:
-
-```text
-add call
-  ↓
-Autograd wrapper
-  ├── construct gradient metadata/node
-  ↓ redispatch
-CPU add kernel
-```
-
-This may coexist temporarily with the existing `Function` machinery; the goal is to teach routing, not to rewrite all Autograd in one version.
-
-## v0.5 required tests
-
-- schema registration/lookup
-- duplicate registration
-- dispatch-key priority
-- missing implementation error
-- CPU kernel selection
-- Autograd wrapper selection
-- redispatch reaches lower kernel
-- no-grad path bypasses graph wrapper where intended
-- migrated ops retain current numerical results
-- migrated ops retain backward correctness
-- Storage/view/version invariants remain green
-
-## v0.5 Definition of Done
-
-```text
-[ ] operator schemas are explicit
-[ ] registry is inspectable
-[ ] dispatch keys have deterministic priority
-[ ] kernels register by operator + key
-[ ] dispatcher routes selected operators
-[ ] redispatch works
-[ ] Autograd/backend separation is demonstrable
-[ ] previous 65-test baseline remains green
-[ ] new dispatcher tests are green
-[ ] docs/DISPATCHER.md exists
-[ ] educational dispatcher example exists
-[ ] version.md + Agents.md completed
-[ ] exact remote CI passes
-[ ] validated snapshot synchronized to main
-```
-
-### Explicit v0.5 non-goals
-
-- Conv2d
-- real CUDA
-- device transfer
-- DDP
-- compiler graph capture
-- full PyTorch dispatch-key set
-- exact ATen schema parser
+Validated with 80-test full regression suite.
 
 ---
 
-# 6. Future versions
+## 3. Current next milestone — v0.6 Neural-Network Operator Stack / CNN 🎯
 
-## v0.6 — NN operator stack + CNN
+### Why v0.6 comes after Dispatcher
 
-### Why after Dispatcher
+The Dispatcher is only meaningful if it can support a nontrivial operator family. `Conv2d` is the first good stress test because it combines:
 
-Conv2d becomes the first substantial operator proving that nontrivial kernels can live behind the routing system instead of being special-cased in Tensor.
+- multi-dimensional shape rules;
+- trainable weights and bias;
+- nontrivial backward formulas;
+- meaningful backend kernel choices;
+- higher computational cost than simple pointwise operations.
 
-### Planned mechanisms
+Therefore v0.6 should **use** the v0.5 operator architecture rather than bypassing it.
 
-- Conv2d readable loop reference
-- Conv2d backward for input/weight/bias
-- im2col educational optimization
+### Target architecture
+
+```text
+nn.Conv2d
+    ↓
+functional conv2d
+    ↓
+aten::conv2d.default
+    ↓
+Dispatcher
+    ├── Autograd wrapper
+    │       ↓ redispatch
+    └── CPU reference kernel
+            ↓
+      readable convolution
+```
+
+### Required implementation
+
+#### v0.6.1 Conv2d reference path
+
+- `nn.Conv2d`
+- functional `conv2d`
+- registered operator schema
+- CPU forward reference kernel using clear loops
+- input/weight/bias backward
+- stride
+- padding
+- deterministic shape validation
+- numerical gradcheck against finite differences / trusted NumPy reference
+
+#### v0.6.2 Conv2d educational optimization
+
+After the loop implementation is correct:
+
+- im2col
+- matrix-multiplication path
+- reference-vs-im2col equivalence tests
+- basic benchmark/example
+
+Keep the readable loop path; do not replace it entirely with optimized code.
+
+#### v0.6.3 Pooling
+
 - MaxPool2d
-- Dropout
+- Dispatcher registration
+- backward index routing
+- shape/error tests
+
+#### v0.6.4 Dropout
+
+- `Dropout`
+- train/eval behavior
+- scaling convention
+- deterministic seeded tests
+
+#### v0.6.5 BatchNorm
+
 - BatchNorm1d / BatchNorm2d
-- running-stat buffers
-- CNN MNIST example
+- train/eval behavior
+- learnable affine parameters
+- running mean/variance as buffers
+- buffer state_dict tests
 
-### Learning questions
+#### v0.6.6 CNN MNIST
 
-- how parameter sharing changes gradients;
-- why im2col converts convolution to GEMM-like work;
-- parameters vs buffers;
-- train/eval-dependent behavior.
+End-to-end model such as:
+
+```text
+Conv2d
+  ↓
+ReLU
+  ↓
+MaxPool2d
+  ↓
+Conv2d
+  ↓
+ReLU
+  ↓
+Flatten
+  ↓
+Linear
+  ↓
+CrossEntropyLoss
+```
+
+The example should reuse existing Dataset/DataLoader/Optimizer/Scheduler infrastructure.
+
+### Definition of Done for v0.6
+
+Tests must demonstrate:
+
+- Conv2d forward correctness;
+- Conv2d input/weight/bias gradients;
+- Dispatcher routes Conv2d through Autograd → CPU;
+- reference loops and im2col agree;
+- pooling forward/backward correctness;
+- Dropout train/eval semantics;
+- BatchNorm parameter vs buffer semantics;
+- CNN can execute a training step end-to-end;
+- full regression suite remains green;
+- exact final `v0.6` branch-head CI passes.
+
+### Explicit non-goals
+
+v0.6 should not add:
+
+- real CUDA;
+- `.to(device)`;
+- distributed training;
+- multiprocessing DataLoader;
+- compiler graph capture.
 
 ---
 
-## v0.7 — Device + backend abstraction
+## 4. Planned future milestones
 
-### Goal
+### v0.7 — Device and Backend Abstraction
 
-Separate Tensor/Dispatcher semantics from the numerical backend.
+Goal:
 
 ```text
 Tensor
@@ -521,272 +294,120 @@ Dispatcher
   └── optional accelerator backend
 ```
 
-Planned:
+Planned concepts:
 
 - `Device`
-- device metadata on Storage/Tensor
+- device metadata on Tensor/Storage
 - `.to(device)`
 - backend-owned allocation
+- CPU registration
+- optional CuPy experiment if environment permits
 - device mismatch errors
-- CPU kernel registrations
-- optional CuPy experiment if practical
 
-Non-goal: production CUDA C++ runtime.
+### v0.8 — Advanced Autograd Engine
 
----
+Planned concepts:
 
-## v0.8 — Advanced Autograd engine
-
-Planned:
-
-- leaf/non-leaf grad semantics refinement
-- `retain_grad()`
+- graph lifetime
+- non-leaf `retain_grad()`
 - hooks
-- graph lifetime/release
 - `retain_graph`
-- custom Function example
-- richer saved-tensor handling
+- custom Function examples
 - optional `create_graph`
-- second-order derivative demonstration
+- simple higher-order gradients
 
-Learning target: understand not only differentiation formulas but graph lifetime and ownership.
+### v0.9 — Serialization / Training Runtime / Reproducibility
 
----
+Planned concepts:
 
-## v0.9 — Training runtime, checkpointing and reproducibility
+- unified model + optimizer + scheduler + RNG checkpoint
+- epoch / global-step state
+- deterministic resume
+- seed management
+- optional gradient clipping/callback concepts
 
-Planned state:
+### v0.10 — Distributed / DDP Concepts
 
-```text
-model state
-optimizer state
-scheduler state
-RNG state
-epoch / global_step
-sampler state where relevant
-```
+Planned concepts:
 
-Goals:
+- DistributedSampler
+- ProcessGroup abstraction
+- simulated/CPU AllReduce
+- DDP wrapper
+- gradient-ready hooks
+- bucket concepts
 
-- unified checkpoint object
-- deterministic save/resume
-- resume MNIST/CNN without silently changing training trajectory
-- seed lifecycle documentation
+The goal is architectural understanding, not reimplementing NCCL.
 
----
+### v0.11 — Graph IR and Eager-to-Graph Capture
 
-## v0.10 — Distributed / DDP concepts
-
-Staged plan:
-
-1. DistributedSampler
-2. ProcessGroup abstraction
-3. simulated/CPU `all_reduce`
-4. DDP wrapper
-5. gradient-ready hooks
-6. bucket concept
-
-Goal: explain model replicas + collective gradient synchronization, not reimplement NCCL.
-
----
-
-## v0.11 — Graph IR + eager-to-graph capture
-
-Planned:
+Planned concepts:
 
 - Node / Value / Graph
-- constants and graph inputs/outputs
-- trace supported operators
-- graph pretty printer
+- supported-op tracing
 - graph interpreter
-- explicit graph-break concept
+- explicit graph breaks
 
-```text
-Python eager code
-      ↓
-supported region
-      ↓
-Graph IR
-      ↓
-unsupported Python
-      ↓
-graph break / eager resume
-```
+### v0.12 — Dynamo-like Guards and Graph Cache
 
----
-
-## v0.12 — Dynamo-like guards + graph cache
-
-Planned:
+Planned concepts:
 
 - shape/dtype/device/constant guards
 - graph cache
-- cache hits/misses
-- guard failure → recompile
-- dynamic-shape discussion and limited experiment
+- recompile on guard failure
+- dynamic-shape experiments
 
-Learning target: captured graphs are valid only under recorded assumptions.
+### v0.13 — AOTAutograd-like Forward/Backward Capture
 
----
+Planned concepts:
 
-## v0.13 — AOTAutograd-like forward/backward graphs
+- forward graph
+- backward graph
+- saved intermediates
+- eager-vs-captured gradient equivalence
 
-Planned:
+### v0.14 — Inductor-like Lowering and Kernel Fusion
 
-- forward graph capture
-- explicit saved intermediates
-- backward graph for supported operator subset
-- eager vs captured gradient parity
-- joint forward/backward representation
+Planned concepts:
 
-Learning target: backward computation can itself become compiler-visible work.
-
----
-
-## v0.14 — Inductor-like lowering + fusion
-
-Planned educational pipeline:
-
-```text
-Graph IR
-   ↓
-normalized/lowered ops
-   ↓
-loop-level representation
-   ↓
-fusion groups
-   ↓
-NumPy/Python generated kernel or pseudo-codegen
-```
-
-Focus:
-
-- operator fusion
-- intermediate elimination
-- simple scheduling decisions
-- compare unfused vs fused execution
-
-Do not attempt production Triton/LLVM code generation in the first implementation.
+- simple lower-level loop IR
+- pointwise fusion
+- reduction lowering
+- generated Python/NumPy kernels
+- eager vs compiled correctness/performance comparison
 
 ---
 
-## v0.15 — Runtime/performance mechanisms
+## 5. Version-development protocol
 
-Potential learning topics after the architecture is stable:
-
-- allocator/caching allocator model
-- DataLoader worker/prefetch lifecycle
-- pinned-memory concept
-- async stream/event simulation
-- profiling
-- kernel launch/overhead discussion
-- memory planning
-
-Only add mechanisms that expose a useful PyTorch architectural idea.
-
----
-
-# 7. v1.0 target
-
-v1.0 is not defined by feature count. It is reached when the framework provides a coherent educational map across the major layers:
+For every future version:
 
 ```text
-Tensor memory model
-      ↓
-Dispatcher/operator system
-      ↓
-backend kernels + Autograd
-      ↓
-NN + optim + data
-      ↓
-training/checkpoint runtime
-      ↓
-distributed concepts
-      ↓
-graph capture + compiler concepts
+read main/Agents.md + Plan.md
+        ↓
+create version branch from latest main
+        ↓
+write branch version.md + Agents.md first
+        ↓
+implement smallest readable reference mechanism
+        ↓
+add invariant + error + numerical tests
+        ↓
+add educational example + architecture docs
+        ↓
+run full regression
+        ↓
+exact final branch-head CI green
+        ↓
+freeze branch
+        ↓
+integrate validated state to main
+        ↓
+advance this Plan.md
 ```
 
-The user should be able to move from a mini-pytorch implementation to real PyTorch internals and recognize the same architectural boundaries.
+## 6. Current directive
 
----
+`v0.5` is complete and frozen. `main` contains the validated Dispatcher implementation.
 
-# 8. Cross-version engineering rules
-
-## Rule 1 — One major mental model per version
-
-Avoid mixing Dispatcher + Conv2d + Device + DDP in one version.
-
-## Rule 2 — Preserve earlier invariants
-
-Later versions must retain earlier guarantees, especially:
-
-- correct Autograd accumulation;
-- optimizer state behavior;
-- data-pipeline separation;
-- Storage aliasing;
-- scalar shape `()` semantics;
-- view/copy distinction;
-- version-counter correctness.
-
-## Rule 3 — Reference implementation before optimization
-
-```text
-readable
-  ↓
-correct
-  ↓
-tested
-  ↓
-profiled
-  ↓
-optimized
-```
-
-## Rule 4 — Every abstraction needs error tests
-
-A class existing is not enough. Its invariants and failure modes must be observable.
-
-## Rule 5 — `main` never intentionally falls behind
-
-Validated desired work is integrated immediately.
-
-## Rule 6 — Every frozen branch explains itself
-
-Opening any version branch should be enough to understand it via:
-
-```text
-Agents.md
-version.md
-architecture docs
-example
-source
-Tests
-```
-
----
-
-# 9. Immediate next action
-
-The next feature branch should be:
-
-```text
-v0.5
-```
-
-created from the latest `main`.
-
-Its first commits should establish:
-
-```text
-version.md
-Agents.md
-mini_pytorch/dispatch/
-    schema.py
-    keys.py
-    registry.py
-    dispatcher.py
-tests/test_dispatcher.py
-docs/DISPATCHER.md
-```
-
-Only after that boundary is stable should existing Tensor operators be incrementally migrated through it.
+The next version branch should be **`v0.6`**, created from current `main`, and should focus on the **neural-network operator stack / CNN**, starting with a readable Dispatcher-backed Conv2d reference implementation.
