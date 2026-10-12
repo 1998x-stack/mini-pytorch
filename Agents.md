@@ -1,4 +1,4 @@
-# Agents.md — mini-pytorch v0.7 Development Contract
+# Agents.md — mini-pytorch v0.7 Frozen Branch Contract
 
 > Read this file before modifying the `v0.7` branch.
 
@@ -6,30 +6,10 @@
 
 - Branch: `v0.7`
 - Previous version: `v0.6`
-- Mental model: **Device + Backend + device-aware Dispatcher**
-- Status: active until Definition of Done is satisfied, then freeze.
+- Primary mental model: **Device + Backend + device-aware Dispatcher**
+- Status: **frozen historical learning snapshot**
 
-## 1. Scope
-
-v0.7 exists to make placement explicit without real accelerator dependencies.
-
-Allowed scope:
-
-- Device value object
-- backend registry/ownership
-- CPU backend
-- deterministic simulated `edu` backend
-- Storage.device / Tensor.device
-- Tensor.to(device)
-- device-aware DispatchKey inference
-- cross-device validation
-- preserving Autograd above backend routing
-
-Do not add advanced Autograd, DDP, compiler graph capture, streams, CUDA kernels, or mixed precision.
-
-## 2. Architecture invariant
-
-Preferred direction:
+## 1. What v0.7 teaches
 
 ```text
 Tensor metadata
@@ -41,96 +21,89 @@ Backend-owned allocation
 logical operator
    ↓
 Dispatcher
-   ├── Autograd wrapper
-   ├── CPU backend key
-   └── EDU backend key
+   ├── Autograd / NoGrad policy
+   ├── CPU backend
+   └── EDU simulated backend
 ```
 
-Forbidden pattern:
+The version scope is intentionally limited to:
 
-```python
-if tensor.device == "cpu":
-    ...
-elif tensor.device == "edu":
-    ...
-```
+- Device value object;
+- backend registry/ownership;
+- Storage.device / Tensor.device;
+- Tensor.to(device);
+- Module.to(device);
+- device-aware DispatchKey inference;
+- mixed-device validation;
+- CPU + deterministic EDU backend routing.
 
-repeated across Tensor/operator implementations.
+## 2. Historical branch rule
 
-Backend selection belongs in the Dispatcher/backend registry.
+This branch is frozen.
 
-## 3. Simulated backend rule
+Allowed changes:
 
-`edu` may use NumPy arrays internally. Its purpose is to validate architecture, not simulate performance.
+- documentation corrections;
+- tests clarifying promised v0.7 behavior;
+- narrowly scoped correctness fixes within Device/Backend semantics.
 
-It must nevertheless have:
+Forbidden:
 
-- distinct `Device` identity;
-- distinct DispatchKey;
-- independent backend registration;
-- transfer semantics through `.to()`;
-- clear mixed-device errors.
+- v0.8 advanced Autograd features;
+- DDP;
+- real CUDA/CuPy runtime;
+- streams/events;
+- compiler features;
+- unrelated API expansion.
 
-Do not claim `edu` is GPU or CUDA.
+## 3. Frozen semantics
 
-## 4. Transfer semantics
-
-Target semantics:
-
-- `x.to(x.device)` returns `x` when `copy=False`;
-- `copy=True` creates new Storage;
-- changing device creates new Storage and breaks aliasing;
-- dtype is preserved unless a future version explicitly adds dtype conversion;
-- requires-grad is preserved;
-- cross-device copy remains connected to Autograd with identity gradient;
-- views transfer their logical values, not their original Storage alias graph.
-
-## 5. Dispatcher semantics
-
-Mixed devices among Tensor operands must fail before numerical backend execution.
-
-Expected routes:
+### Transfer
 
 ```text
-CPU + grad    → {Autograd, CPU}
-EDU + grad    → {Autograd, EDU}
-CPU no-grad   → {NoGrad, CPU}
-EDU no-grad   → {NoGrad, EDU}
+x.to(x.device, copy=False) → x
+same-device copy=True      → new Storage
+cross-device transfer      → new target Storage
 ```
 
-Autograd wrappers must redispatch after removing only the policy key, preserving the backend key.
+Cross-device transfer breaks Storage aliasing and preserves gradient connectivity through identity CopyBackward when grad mode is enabled.
 
-## 6. Testing contract
+### Dispatcher
 
-Add tests for:
+```text
+CPU + grad  → {Autograd, CPU}
+EDU + grad  → {Autograd, EDU}
+CPU no_grad → {NoGrad, CPU}
+EDU no_grad → {NoGrad, EDU}
+```
 
-- Device parsing/equality/hash/errors;
-- backend registry and allocation;
-- Storage/Tensor device identity;
-- `.to()` same-device/copy/cross-device behavior;
-- transfer gradient flow;
-- alias separation after transfer;
-- Dispatcher CPU vs EDU selection;
-- mixed-device errors;
-- scalar promotion on EDU;
-- direct Function.apply operator device preservation;
-- Conv2d/MaxPool routing on EDU where supported;
-- full previous 90-test regression.
+Mixed-device Tensor operands fail before backend numerical execution.
 
-Before freeze, exact final branch-head GitHub Actions must be green.
+### Simulated EDU backend
 
-## 7. Documentation contract
+`edu` uses NumPy host arrays internally and exists only to demonstrate backend identity/routing without hardware dependency. Never describe it as CUDA or GPU acceleration.
 
-Before freeze update:
+## 4. Validation baseline
 
-- `version.md`
-- `README.md`
-- `Agents.md`
-- `docs/DEVICE_BACKEND.md`
-- `examples/10_device_backend.py`
+Release-candidate validation:
 
-## 8. Freeze rule
+```text
+103 tests
+OK
+```
 
-Once frozen, v0.7 becomes a historical learning snapshot. No v0.8 features may be backported except narrow correctness fixes inside the v0.7 scope.
+Before reporting any future v0.7 fix as validated, rerun the full suite and require GitHub Actions success on the exact modified branch head.
 
-Validated v0.7 must then be integrated into `main`, and main governance docs must be restored/advanced to v0.8.
+## 5. Documentation map
+
+```text
+README.md
+version.md
+docs/DEVICE_BACKEND.md
+examples/10_device_backend.py
+tests/test_device_backend.py
+```
+
+## 6. Next-version boundary
+
+Advanced Autograd Engine work belongs to `v0.8`, created from the latest validated `main`, not from this frozen branch.
