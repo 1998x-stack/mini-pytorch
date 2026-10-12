@@ -20,6 +20,7 @@ from .state import CHECKPOINT_SCHEMA_VERSION, CheckpointState, TrainingState
 FRAMEWORK_VERSION = "0.9.0"
 _METADATA_FILE = "metadata.json"
 _TENSORS_FILE = "tensors.npz"
+_FORMAT_NAME = "mini-pytorch-checkpoint"
 
 
 class CheckpointError(RuntimeError):
@@ -79,15 +80,16 @@ def _encode_value(value: Any, arrays: dict[str, np.ndarray]) -> Any:
             raise TypeError("non-finite floats are not supported in checkpoint JSON metadata")
         return value
     if isinstance(value, dict):
-        items = []
-        for key in sorted(value, key=_key_sort_value):
-            items.append(
+        return {
+            "__kind__": "dict",
+            "items": [
                 {
                     "key": _encode_key(key),
                     "value": _encode_value(value[key], arrays),
                 }
-            )
-        return {"__kind__": "dict", "items": items}
+                for key in sorted(value, key=_key_sort_value)
+            ],
+        }
     if isinstance(value, tuple):
         return {
             "__kind__": "tuple",
@@ -111,10 +113,10 @@ def _decode_value(value: Any, arrays: dict[str, np.ndarray]) -> Any:
             raise CheckpointError(f"checkpoint references missing tensor array {name!r}")
         return np.array(arrays[name], copy=True)
     if kind == "dict":
-        result = {}
         items = value.get("items")
         if not isinstance(items, list):
             raise CheckpointError("malformed encoded dictionary")
+        result = {}
         for item in items:
             if not isinstance(item, dict) or set(item) != {"key", "value"}:
                 raise CheckpointError("malformed encoded dictionary item")
@@ -132,46 +134,66 @@ def _decode_value(value: Any, arrays: dict[str, np.ndarray]) -> Any:
     raise CheckpointError(f"unknown encoded checkpoint value kind {kind!r}")
 
 
-def _logical_payload(state: CheckpointState) -> dict[str, Any]:
+def _metadata_document(
+    state: CheckpointState,
+    arrays: dict[str, np.ndarray],
+) -> dict[str, Any]:
     state.validate()
     return {
+        "format": _FORMAT_NAME,
         "schema_version": state.schema_version,
         "framework_version": state.framework_version,
-        "model_state": state.model_state,
-        "optimizer_state": state.optimizer_state,
-        "scheduler_state": state.scheduler_state,
-        "rng_state": state.rng_state,
         "training_state": state.training_state.to_dict(),
-        "metadata": state.metadata,
+        "model_state": _encode_value(state.model_state, arrays),
+        "optimizer_state": _encode_value(state.optimizer_state, arrays),
+        "scheduler_state": _encode_value(state.scheduler_state, arrays),
+        "rng_state": _encode_value(state.rng_state, arrays),
+        "metadata": _encode_value(state.metadata, arrays),
     }
 
 
-def _state_from_payload(payload: dict[str, Any]) -> CheckpointState:
-    if not isinstance(payload, dict):
-        raise CheckpointError("checkpoint root must decode to a dictionary")
+def _state_from_document(
+    document: dict[str, Any],
+    arrays: dict[str, np.ndarray],
+) -> CheckpointState:
+    if not isinstance(document, dict):
+        raise CheckpointError("checkpoint metadata root must be a dictionary")
     required = {
+        "format",
         "schema_version",
         "framework_version",
+        "training_state",
         "model_state",
         "optimizer_state",
         "scheduler_state",
         "rng_state",
-        "training_state",
         "metadata",
     }
-    missing = sorted(required - set(payload))
+    missing = sorted(required - set(document))
     if missing:
         raise CheckpointError(f"checkpoint missing required sections={missing}")
+    if document["format"] != _FORMAT_NAME:
+        raise CheckpointError(f"unsupported checkpoint format {document['format']!r}")
+    try:
+        schema_version = int(document["schema_version"])
+    except (TypeError, ValueError) as exc:
+        raise CheckpointError("checkpoint schema_version must be an integer") from exc
+    if schema_version != CHECKPOINT_SCHEMA_VERSION:
+        raise CheckpointError(
+            f"unsupported checkpoint schema version {schema_version}; "
+            f"expected {CHECKPOINT_SCHEMA_VERSION}"
+        )
+
     try:
         state = CheckpointState(
-            schema_version=int(payload["schema_version"]),
-            framework_version=payload["framework_version"],
-            model_state=payload["model_state"],
-            optimizer_state=payload["optimizer_state"],
-            scheduler_state=payload["scheduler_state"],
-            rng_state=payload["rng_state"],
-            training_state=TrainingState.from_dict(payload["training_state"]),
-            metadata=payload["metadata"],
+            schema_version=schema_version,
+            framework_version=document["framework_version"],
+            model_state=_decode_value(document["model_state"], arrays),
+            optimizer_state=_decode_value(document["optimizer_state"], arrays),
+            scheduler_state=_decode_value(document["scheduler_state"], arrays),
+            rng_state=_decode_value(document["rng_state"], arrays),
+            training_state=TrainingState.from_dict(document["training_state"]),
+            metadata=_decode_value(document["metadata"], arrays),
         )
         state.validate()
     except (TypeError, ValueError, KeyError) as exc:
@@ -223,7 +245,6 @@ def _write_npz(path: Path, arrays: dict[str, np.ndarray]) -> None:
 def _publish_directory(staging: Path, target: Path, overwrite: bool) -> None:
     if target.exists() and not overwrite:
         raise FileExistsError(f"checkpoint path already exists: {target}")
-
     backup: Path | None = None
     try:
         if target.exists():
@@ -257,8 +278,8 @@ def save_checkpoint_state(
     )
     try:
         arrays: dict[str, np.ndarray] = {}
-        encoded = _encode_value(_logical_payload(state), arrays)
-        _write_json(staging / _METADATA_FILE, encoded)
+        document = _metadata_document(state, arrays)
+        _write_json(staging / _METADATA_FILE, document)
         _write_npz(staging / _TENSORS_FILE, arrays)
         _publish_directory(staging, target, overwrite)
     except Exception:
@@ -279,21 +300,17 @@ def load_checkpoint_state(path: str | os.PathLike[str]) -> CheckpointState:
         raise CheckpointError(f"checkpoint missing {_METADATA_FILE}")
     if not tensors_path.is_file():
         raise CheckpointError(f"checkpoint missing {_TENSORS_FILE}")
-
     try:
         with metadata_path.open("r", encoding="utf-8") as handle:
-            encoded = json.load(handle)
+            document = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
         raise CheckpointError("could not read checkpoint metadata.json") from exc
-
     try:
         with np.load(tensors_path, allow_pickle=False) as archive:
             arrays = {name: np.array(archive[name], copy=True) for name in archive.files}
     except (OSError, ValueError, EOFError) as exc:
         raise CheckpointError("could not read checkpoint tensors.npz") from exc
-
-    payload = _decode_value(encoded, arrays)
-    return _state_from_payload(payload)
+    return _state_from_document(document, arrays)
 
 
 def restore_checkpoint_state(
@@ -307,7 +324,6 @@ def restore_checkpoint_state(
 ) -> TrainingState:
     """Apply validated checkpoint state to freshly constructed training objects."""
     state.validate()
-
     model.load_state_dict(state.model_state, strict=strict)
     optimizer.load_state_dict(state.optimizer_state)
 
@@ -323,12 +339,9 @@ def restore_checkpoint_state(
         )
 
     restored_training_state = TrainingState.from_dict(state.training_state.to_dict())
-
-    # Restore RNG last: fresh model/optimizer/scheduler construction may have
-    # consumed random values, but those draws must not change future behavior.
     if restore_rng:
+        # Restore RNG last: constructors may have consumed random values.
         set_rng_state(state.rng_state)
-
     return restored_training_state
 
 
