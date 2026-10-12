@@ -6,7 +6,7 @@
 - **Base:** latest integrated `main` after the v0.3 data-pipeline milestone
 - **Previous version:** `v0.3`
 - **Theme:** TensorImpl-like memory model — Storage, stride, views, contiguous layout, inplace safety
-- **Status:** release candidate — implementation complete, awaiting final remote CI and `main` synchronization
+- **Status:** validated release candidate — remote CI green; integration into `main` pending
 
 v0.4 changes the meaning of a Tensor more deeply than any previous release. In v0.1-v0.3, a Tensor was effectively a NumPy array plus autograd metadata. In v0.4, Tensor identity is decomposed into an allocation plus view metadata.
 
@@ -37,8 +37,6 @@ The primary question for this version is:
 Tensor ≈ ndarray + requires_grad + grad_fn
 ```
 
-NumPy implicitly owns most memory-layout behavior.
-
 ### v0.4 mental model
 
 ```text
@@ -62,82 +60,84 @@ A transpose, slice or compatible view can now create a new Tensor object without
 
 - explicit `Storage`
 - flat contiguous allocation
-- dtype and size metadata
-- shared version counter
+- dtype / size / nbytes metadata
+- shared `VersionCounter`
 - contiguous stride calculation
 
-### Tensor layout
+### Tensor layout metadata
 
 - explicit shape
 - explicit element strides
 - explicit `storage_offset`
 - `stride()`
 - `is_contiguous()`
+- zero-dimensional scalar layout preserved correctly
 
-### Views
+### View operations
 
 - `transpose(dim0, dim1)`
 - `permute(*dims)`
-- basic slicing views, including negative strides where NumPy can represent a view
-- Storage alias preservation
-- backward through view operations
+- basic slicing views
+- negative-stride slice support where representable
+- shared Storage alias preservation
+- backward through transpose/reshape/slice
 
-### view / reshape / contiguous
+### `view` / `reshape` / `contiguous`
 
-- `view()` requires a metadata-only compatible layout
-- `reshape()` returns a view when possible and copies when required
-- `contiguous()` returns self when already contiguous and materializes a contiguous copy otherwise
+- `view()` requires a metadata-only compatible layout and fails rather than copying
+- `reshape()` may share Storage or allocate a new Storage
+- `contiguous()` returns self when already contiguous and materializes otherwise
 
-### Inplace/autograd safety
+### Inplace and Autograd safety
 
-- shared Storage version counter
-- tracked educational inplace ops: `add_`, `mul_`, `copy_`
-- version bump visible through all aliases
-- optimizer updates bump parameter Storage versions
-- `load_state_dict()` bumps target Storage versions
-- saved-tensor version validation before backward
-- error when a saved value is changed after forward
-- leaf-requires-grad inplace restriction unless grad is disabled
+- tracked `add_`, `mul_`, `copy_`
+- leaf `requires_grad=True` inplace restriction while grad is enabled
+- shared Storage version counter visible through aliases
+- optimizer updates bump parameter versions
+- `load_state_dict()` bumps destination versions
+- forward `Context` records versions of input values actually saved for backward
+- backward checks saved versions and rejects invalidated values
 
 ---
 
 ## 4. What remains unchanged from v0.3
 
-v0.4 preserves the higher-level training stack:
+v0.4 intentionally preserves the higher-level stack:
 
 - eager dynamic Autograd graph
 - Module / Parameter registration
 - Linear / activation / loss modules
-- optimizer families and LR schedulers
+- SGD / Adam / AdamW / RMSprop / Adagrad / Adamax
+- LR schedulers
 - Dataset / Sampler / BatchSampler / DataLoader
-- MNIST classification example
+- MNIST classification path
 
-This version changes Tensor memory semantics underneath those layers instead of redesigning them.
+The version changes Tensor memory semantics underneath those systems rather than redesigning them.
 
 ---
 
-## 5. Demonstrable behavior
+## 5. Observable invariants
 
-The implementation and tests make these statements observable:
+The tests make the following behaviors explicit:
 
 ```text
-transpose shares Storage
-transpose can be non-contiguous
-permute changes strides without copying
-slice can change storage_offset without copying
-negative-step slice can use a negative stride
-view can fail on incompatible layout
-reshape may allocate new Storage
-contiguous may allocate new Storage
-aliases observe tracked inplace mutation
-aliases share one version counter
-optimizer/state loading participate in versioning
-saved-value mutation can invalidate backward
+contiguous tensor -> canonical element strides
+transpose         -> same Storage, different stride
+permute           -> same Storage, reordered stride
+slice             -> same Storage, changed storage_offset/stride
+negative slice    -> negative stride
+view              -> must alias or fail
+reshape           -> alias when possible, copy when required
+contiguous        -> materialize only when required
+inplace alias     -> all aliases see mutation + shared version bump
+optimizer update  -> parameter version bump
+state loading     -> destination version bump
+saved mutation    -> backward RuntimeError
 ```
 
 ---
 
-## 6. Important source files
+## 6. Important files
 
 Recommended reading order:
 
@@ -163,84 +163,120 @@ examples/07_tensor_memory.py
 
 After v0.4, the reader should be able to explain:
 
-1. why Tensor is not synonymous with its underlying allocation;
-2. what a stride means in element units;
-3. how `storage_offset` lets a slice start inside shared Storage;
-4. why transpose can be O(1) metadata manipulation;
-5. why a transposed tensor is commonly non-contiguous;
-6. why `view()` may fail while `reshape()` succeeds;
-7. what `contiguous()` actually materializes;
-8. why aliases need a shared mutation/version counter;
-9. why Autograd must detect mutation of values saved for backward;
-10. why parameter/state mutations must participate in the same versioning model.
+1. why Tensor is not synonymous with its allocation;
+2. what strides mean in element units;
+3. how `storage_offset` represents a slice into shared Storage;
+4. why transpose/permute can be metadata-only operations;
+5. why non-contiguous tensors are valid tensors;
+6. why `view()` may fail while `reshape()` works;
+7. what `contiguous()` actually allocates;
+8. why aliases need a shared version counter;
+9. why Autograd must detect mutation of saved values;
+10. why optimizer/state-loading writes belong to the same mutation model.
 
 ---
 
-## 8. Explicit non-goals
+## 8. Validation
+
+### Local development validation
+
+The reconstructed development copy passed its regression + v0.4 memory-model tests after the scalar-layout fix.
+
+### Exact remote branch validation
+
+GitHub Actions validated the exact remote commit:
+
+```text
+e12c947a1d6e6f44779e7f2bb8ff9b776a80f808
+```
+
+Environment included:
+
+```text
+Ubuntu 24.04
+Python 3.11.17
+NumPy 2.4.6
+```
+
+Result:
+
+```text
+Ran 65 tests in 0.510s
+OK
+```
+
+This run covers the existing Autograd/NN/optimizer/scheduler/data/MNIST tests plus the new v0.4 Storage/layout/version tests.
+
+---
+
+## 9. Important bug found during validation
+
+The first remote run exposed a real v0.4 regression: `np.ascontiguousarray()` promoted a 0-D ndarray to shape `(1,)`, turning scalar Tensor layout into one-dimensional layout.
+
+The fix was architectural rather than test-specific:
+
+```text
+before: scalar Tensor shape () -> ascontiguousarray -> (1,)   WRONG
+after:  scalar Tensor shape () -> np.array(order="C") -> ()  CORRECT
+```
+
+The final green CI confirms legacy scalar Autograd semantics remain intact.
+
+---
+
+## 10. Explicit non-goals
 
 v0.4 intentionally does **not** implement:
 
-- a Dispatcher or operator registry;
-- device/backend dispatch;
-- CUDA;
-- arbitrary advanced NumPy indexing parity;
-- a complete alias-analysis system;
-- all PyTorch memory formats;
-- channels-last layout;
-- sparse/quantized storage;
-- production-grade storage resizing;
-- full PyTorch inplace API parity.
+- operator registry / Dispatcher
+- device/backend dispatch
+- CUDA
+- advanced indexing parity
+- complete alias analysis
+- channels-last / arbitrary memory formats
+- sparse / quantized storage
+- production storage resizing
+- full PyTorch inplace API parity
 
-Those would obscure the Storage/stride/view mental model.
-
----
-
-## 9. Validation status
-
-A locally reconstructed v0.4 core was executed with the existing regression tests plus the new memory-model tests before the remote commits were finalized. That validation passed.
-
-The repository also now contains GitHub Actions CI so the exact remote branch can be validated with:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-Do not treat v0.4 as frozen until the latest remote CI run succeeds and the exact validated branch state is synchronized to `main`.
+Those belong to later architectural milestones.
 
 ---
 
-## 10. Definition of Done
+## 11. Definition of Done
 
-- [x] `Storage` is explicit and independently inspectable.
-- [x] Tensor exposes shape, stride and storage offset.
-- [x] transpose / permute / basic slicing preserve Storage when appropriate.
-- [x] shared-storage aliasing has invariant tests.
-- [x] `view` / `reshape` differ observably on non-contiguous input.
-- [x] `contiguous()` behavior is tested.
-- [x] view backward maps gradients correctly.
-- [x] tracked inplace ops bump the shared version counter.
-- [x] optimizer and state-loading writes bump versions.
-- [x] saved-tensor version mismatch is detected before backward.
-- [x] educational example exists.
-- [x] architecture documentation exists.
-- [x] package version is `0.4.0`.
-- [ ] latest exact remote branch passes CI.
-- [ ] validated state is synchronized to `main`.
+- [x] explicit `Storage`
+- [x] shape / stride / storage offset metadata
+- [x] transpose / permute / basic slicing aliases
+- [x] shared-storage invariant tests
+- [x] distinct `view()` / `reshape()` behavior
+- [x] `contiguous()` semantics
+- [x] backward through view operations
+- [x] shared version counter
+- [x] tracked inplace operations
+- [x] optimizer/state-loading version integration
+- [x] saved-tensor version mismatch detection
+- [x] zero-dimensional scalar compatibility
+- [x] educational example
+- [x] `docs/TENSOR_MEMORY.md`
+- [x] package version `0.4.0`
+- [x] exact remote CI: **65/65 tests pass**
+- [ ] synchronize this validated snapshot into `main`
 
 ---
 
-## 11. Next version
+## 12. Next version: v0.5
 
-`v0.5` introduces an operator registry and Dispatcher-like routing layer.
-
-The dependency rationale is deliberate:
+`v0.5` owns the operator registry and Dispatcher-like routing layer.
 
 ```text
-v0.4: define what a Tensor/storage/layout is
-                  ↓
-v0.5: define how Tensor operations are registered and routed
-                  ↓
-later: select CPU / Autograd / accelerator implementations
+v0.4
+Storage + Tensor layout semantics
+        ↓
+v0.5
+operator schema / registry / dispatch key / kernel routing
+        ↓
+later versions
+CPU / accelerator / Autograd-specific implementations
 ```
 
-This avoids scattering backend conditionals across Tensor methods.
+The dependency order is deliberate: first define what a Tensor is, then define how operations on that Tensor are routed.
