@@ -36,7 +36,6 @@ class Module:
             object.__setattr__(self, name, value)
             return
 
-        # Remove any previous registration under this name before reassigning.
         self._parameters.pop(name, None)
         self._modules.pop(name, None)
         self._buffers.pop(name, None)
@@ -147,6 +146,7 @@ class Module:
                     f"shape mismatch for {name}: expected {target.data.shape}, got {value.shape}"
                 )
             target.data[...] = value
+            target._mark_dirty()
 
     def forward(self, *args, **kwargs):
         raise NotImplementedError
