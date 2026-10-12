@@ -6,10 +6,6 @@ The key design rule is separation of concerns:
 * Sampler answers: "which sample index comes next?"
 * BatchSampler answers: "which indices form the next mini-batch?"
 * DataLoader answers: "fetch those samples and collate them"
-
-Keeping these responsibilities separate makes shuffle, custom sampling, class
-balancing, distributed sampling, and batching extensible without changing the
-Dataset API.
 """
 from __future__ import annotations
 
@@ -18,13 +14,11 @@ from typing import Iterable, Iterator, Sized
 
 import numpy as np
 
+from ..runtime.rng import integers as framework_integers
+from ..runtime.rng import permutation as framework_permutation
+
 
 class Sampler(ABC):
-    """Base class that yields dataset indices.
-
-    A sampler never loads data itself. It only defines index order.
-    """
-
     @abstractmethod
     def __iter__(self) -> Iterator[int]:
         raise NotImplementedError
@@ -35,8 +29,6 @@ class Sampler(ABC):
 
 
 class SequentialSampler(Sampler):
-    """Yield indices ``0, 1, ..., len(data_source)-1``."""
-
     def __init__(self, data_source: Sized) -> None:
         self.data_source = data_source
 
@@ -48,11 +40,12 @@ class SequentialSampler(Sampler):
 
 
 class RandomSampler(Sampler):
-    """Yield indices in random order, optionally with replacement.
+    """Yield indices randomly, with framework or explicitly private RNG.
 
-    ``seed`` initializes an internal NumPy Generator once. Therefore two
-    samplers created with the same seed produce the same sequence of epochs,
-    while repeated iteration over one sampler still reshuffles every epoch.
+    ``seed=None`` participates in mini-pytorch's checkpointable framework RNG.
+    An explicit seed preserves the historical component-local stream semantics.
+    v0.9 guarantees exact checkpoint resume at documented training boundaries;
+    arbitrary partially-consumed iterator state is intentionally out of scope.
     """
 
     def __init__(
@@ -66,7 +59,8 @@ class RandomSampler(Sampler):
         self.data_source = data_source
         self.replacement = bool(replacement)
         self._num_samples = num_samples
-        self._rng = np.random.default_rng(seed)
+        self.seed = seed
+        self._rng = None if seed is None else np.random.default_rng(seed)
 
         if len(data_source) < 0:
             raise ValueError("data source length must be non-negative")
@@ -88,9 +82,15 @@ class RandomSampler(Sampler):
         if self.replacement:
             if n == 0 and self.num_samples > 0:
                 raise ValueError("cannot sample from an empty dataset")
-            indices = self._rng.integers(0, n, size=self.num_samples)
+            if self._rng is None:
+                indices = framework_integers(0, n, size=self.num_samples)
+            else:
+                indices = self._rng.integers(0, n, size=self.num_samples)
         else:
-            indices = self._rng.permutation(n)
+            if self._rng is None:
+                indices = framework_permutation(n)
+            else:
+                indices = self._rng.permutation(n)
         return (int(index) for index in indices)
 
     def __len__(self) -> int:
