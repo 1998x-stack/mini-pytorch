@@ -1,5 +1,6 @@
 """mini-pytorch: a small, readable PyTorch-like learning framework."""
-from .autograd import no_grad
+from .autograd import Context, Function, GradFn, RemovableHandle, no_grad
+from .autograd_engine import AutogradEngine, engine
 from .device import Device
 from .backend import Backend, backend_for, list_backends
 from .tensor import Tensor
@@ -28,6 +29,12 @@ __all__ = [
     "Backend",
     "backend_for",
     "list_backends",
+    "Context",
+    "Function",
+    "GradFn",
+    "RemovableHandle",
+    "AutogradEngine",
+    "engine",
     "no_grad",
     "DispatchError",
     "DispatchKey",
@@ -41,4 +48,4 @@ __all__ = [
     "optim",
     "data",
 ]
-__version__ = "0.7.0"
+__version__ = "0.8.0"
