@@ -1,22 +1,22 @@
-# Agents.md — mini-pytorch v0.8 Branch Contract
+# Agents.md — mini-pytorch v0.8 Frozen Branch Contract
 
-> Mandatory reading before changing the `v0.8` branch.
+> Read this file before modifying the frozen `v0.8` branch.
 
 ## Branch identity
 
 - Branch: `v0.8`
 - Previous version: `v0.7`
 - Primary mental model: **Advanced Autograd Engine**
-- Status: active development
+- Status: **frozen historical learning snapshot**
+- Package version: `0.8.0`
+- Validated baseline: `123/123 tests passed`
 
-## 1. Allowed scope
-
-v0.8 may implement only the Autograd-runtime concepts needed to make dynamic backward execution explicit:
+## 1. What v0.8 teaches
 
 ```text
 GradFn / Context
       ↓
-Autograd Engine
+AutogradEngine
  ┌────┼──────────────┐
  ▼    ▼              ▼
 VJP  graph lifetime hooks
@@ -25,167 +25,165 @@ VJP  graph lifetime hooks
               retained gradients
 ```
 
-Allowed:
+Frozen v0.8 includes:
 
-- graph traversal refactor into a dedicated engine;
-- Context release/lifetime state;
+- explicit backward Engine;
+- Context release state;
+- repeated-backward failure after release;
 - `retain_graph`;
 - non-leaf `retain_grad()`;
-- gradient hooks and removable handles;
-- public custom `Function` teaching workflow;
-- explicit higher-order-gradient boundary;
-- tests/docs/examples required to explain those mechanisms.
+- gradient hooks;
+- removable hook handles;
+- public custom `Function` workflow;
+- explicit `create_graph=True` non-support boundary;
+- CPU/EDU parity for Autograd runtime semantics.
 
-## 2. Forbidden scope
+## 2. Historical branch rule
 
-Do not add:
+This branch is frozen.
 
+Allowed changes only:
+
+- documentation corrections;
+- tests clarifying promised v0.8 behavior;
+- narrowly scoped correctness fixes inside v0.8 Autograd semantics.
+
+Forbidden:
+
+- v0.9 training-runtime/checkpoint work;
 - DDP / ProcessGroup / AllReduce;
-- true CUDA runtime or streams;
-- new accelerator backend;
+- real CUDA runtime/streams;
 - compiler capture;
-- serialization/runtime checkpoint system;
 - forward-mode AD;
-- fake/full `create_graph=True` support without differentiable backward formulas;
 - unrelated NN/operator expansion.
 
-Those belong to later versions.
+## 3. Frozen graph-lifetime semantics
 
-## 3. Mandatory invariants
-
-Preserve all established architecture:
-
-- Storage/view/version-counter safety;
-- saved-version checks for inplace mutation;
-- Dispatcher Autograd wrappers;
-- CPU and EDU placement semantics;
-- device-transfer backward;
-- Module/Optimizer/DataLoader/CNN behavior;
-- leaf `.grad` accumulation across independent graphs.
-
-Autograd Engine must not branch on `cpu` vs `edu`.
-
-## 4. Engine design rules
-
-`Tensor.backward()` should remain user-facing but should not own the traversal implementation.
-
-Prefer:
+Default:
 
 ```text
-Tensor.backward(...)
+successful backward
       ↓
-autograd_engine.engine.backward(...)
+release all reachable Context backward state
       ↓
-traverse graph
-      ↓
-apply hooks
-      ↓
-materialize requested grads
-      ↓
-call backward VJPs
-      ↓
-release or retain contexts
+reusing graph fails before hook/.grad side effects
 ```
 
-The Engine owns transient local gradients; Tensor owns only persistent user-observable `.grad`.
+Retained execution:
 
-## 5. Graph lifetime semantics
+```python
+loss.backward(retain_graph=True)
+loss.backward()
+```
 
-Default backward releases traversed backward state after each node has executed successfully.
+The first preserves backward state. The final non-retained execution releases it.
 
-A released Context must fail clearly if reused.
+Release happens only after the whole backward execution succeeds, preventing half-released graphs after hook/backward exceptions.
 
-`retain_graph=True` preserves graph state for another backward execution.
-
-Do not confuse graph retention with gradient reset:
+## 4. Frozen gradient-storage semantics
 
 ```text
-retain_graph controls backward-state lifetime
-zero_grad controls persistent grad accumulation
+leaf Tensor
+→ persistent .grad accumulation
+
+non-leaf Tensor
+→ Engine-local transient grad by default
+
+non-leaf + retain_grad()
+→ persistent .grad accumulation too
 ```
 
-## 6. `retain_grad` semantics
+`retain_graph`, `retain_grad`, and `zero_grad` are separate mechanisms and must not be conflated.
 
-- leaves already retain/accumulate `.grad`;
-- non-leaves do not retain grad by default;
-- `retain_grad()` marks a requires-grad non-leaf for persistent gradient capture;
-- retained grad should accumulate across repeated backward executions just like leaf grad;
-- detached/non-requires-grad Tensor should reject `retain_grad()` clearly.
-
-## 7. Hook semantics
+## 5. Frozen hook semantics
 
 `register_hook(fn)`:
 
 - requires `requires_grad=True`;
-- executes hooks in registration order;
-- hook receives a defensive gradient array copy;
-- `None` means no replacement;
-- replacement must preserve shape;
-- replacement is converted to the Tensor dtype;
-- transformed gradient is the one accumulated and propagated;
-- returned handle supports idempotent `remove()`.
+- runs in registration order;
+- receives a defensive gradient copy;
+- `None` means observe-only;
+- replacement gradient must match shape;
+- Tensor replacement must match device;
+- transformed gradient is both persisted (when applicable) and propagated;
+- `RemovableHandle.remove()` is idempotent.
 
-## 8. Custom Function rule
+## 6. Custom Function semantics
 
-Do not special-case custom functions in the Engine. They must use the same `Function.apply → GradFn → Context → Engine` path as built-in educational Functions.
-
-The example must demonstrate saved tensor state and version safety.
-
-## 9. Higher-order rule
-
-The current engine uses NumPy arrays as backward values.
-
-Therefore full higher-order gradients are not supported. If a `create_graph` argument is exposed, it must raise a clear `NotImplementedError` until backward formulas themselves operate on Tensor objects and build a new graph.
-
-## 10. Testing contract
-
-Starting baseline:
+Custom Functions use the same path as built-ins:
 
 ```text
-v0.7
-103 tests
+Function.apply
+   ↓
+Context + GradFn
+   ↓
+AutogradEngine
+```
+
+Do not add a special execution path for custom Functions.
+
+Saved-version checks and graph-lifetime rules apply equally to them.
+
+## 7. Higher-order boundary
+
+The current Engine propagates NumPy gradient arrays.
+
+Therefore true higher-order Autograd is not implemented.
+
+```python
+loss.backward(create_graph=True)
+```
+
+must continue to raise a clear `NotImplementedError` unless a later version redesigns backward formulas to operate on Tensor objects and construct a differentiable backward graph.
+
+## 8. Device/backend invariant
+
+The Engine is placement-agnostic.
+
+Do not add:
+
+```python
+if tensor.device == "cpu": ...
+elif tensor.device == "edu": ...
+```
+
+inside Autograd execution policy.
+
+CPU/EDU placement remains owned by Tensor/Storage/Dispatcher boundaries established in v0.7.
+
+## 9. Validation baseline
+
+Release candidate:
+
+```text
+f1e3f415764aa537edfe08cf7a7d0b028461ce66
+```
+
+GitHub Actions:
+
+```text
+Ubuntu 24.04
+Python 3.11.17
+NumPy 2.4.6
+123 tests
 OK
 ```
 
-Add dedicated v0.8 coverage for:
+Before reporting any future narrowly scoped v0.8 fix as validated, rerun the complete suite and require GitHub Actions success on the exact modified branch head.
 
-- release/reuse errors;
-- retain_graph reuse;
-- shared graph nodes;
-- retain_grad;
-- hook order/replacement/removal/errors;
-- custom Function;
-- CPU/EDU parity;
-- `create_graph` boundary.
-
-Run full suite:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-Do not freeze unless GitHub Actions passes on the exact final v0.8 branch HEAD.
-
-## 11. Documentation contract
-
-Before freeze update:
+## 10. Documentation map
 
 ```text
 README.md
 version.md
-Agents.md
+mini_pytorch/autograd.py
+mini_pytorch/autograd_engine.py
+mini_pytorch/tensor.py
+tests/test_autograd_engine.py
 docs/AUTOGRAD_ENGINE.md
 examples/11_autograd_engine.py
-pyproject.toml
 ```
 
-## 12. Freeze rule
+## 11. Next-version boundary
 
-When the exact final branch head is green:
-
-1. mark `version.md` frozen;
-2. mark this file frozen;
-3. do not change framework code again;
-4. fast-forward validated v0.8 into main;
-5. restore canonical main README/Agents/Plan;
-6. move roadmap to v0.9 Training Runtime / Reproducibility.
+Training Runtime / Serialization / Reproducibility work belongs to `v0.9`, created from the latest validated `main`, not from this frozen branch.
