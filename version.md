@@ -5,10 +5,11 @@
 - **Branch:** `v0.5`
 - **Previous version:** `v0.4`
 - **Theme:** operator schema + registry + DispatchKey + Dispatcher + redispatch + Autograd routing
-- **Status:** active development
-- **Target package version:** `0.5.0`
+- **Status:** **frozen historical learning snapshot**
+- **Package version:** `0.5.0`
+- **Validated tests:** 80/80 passed on GitHub Actions
 
-v0.5 introduces the routing layer between Tensor API and concrete operator implementations.
+v0.5 inserts an explicit routing layer between Tensor API and concrete operator implementations.
 
 ```text
 Tensor API
@@ -25,19 +26,19 @@ Autograd NoGrad    CPU
   └──── redispatch ─┘
 ```
 
-The primary question is:
+The central question answered by this version is:
 
-> Why should `x + y` resolve an operator through a dispatcher instead of hard-coding every backend/autograd behavior inside `Tensor.__add__`?
+> Why should `x + y` resolve a logical operator through a dispatcher instead of hard-coding every backend/autograd behavior inside `Tensor.__add__`?
 
-## 2. Difference from v0.4
+## 2. Core difference from v0.4
 
 v0.4 established Tensor memory identity:
 
 ```text
-Storage + shape + stride + offset + version
+Storage + shape + stride + storage_offset + version
 ```
 
-v0.5 keeps those semantics stable and adds an execution-routing identity:
+v0.5 adds execution-routing identity:
 
 ```text
 logical operator
@@ -49,9 +50,9 @@ dispatch keys
 selected implementation
 ```
 
-This is the prerequisite for future device/backend work because Tensor methods no longer need large `if device == ...` branches.
+This is the architectural prerequisite for future real device/backend support.
 
-## 3. Required mechanisms
+## 3. Implemented mechanisms
 
 ### Operator schema
 
@@ -65,9 +66,10 @@ This is the prerequisite for future device/backend work because Tensor methods n
 ### Registry
 
 - schema registration
-- per-operator per-key kernel registration
+- `(operator, DispatchKey) -> kernel` registration
 - duplicate-kernel errors
-- lookup/introspection API
+- schema/kernel introspection
+- `Library` registration facade
 
 ### Dispatch keys
 
@@ -78,114 +80,148 @@ Educational keys:
 - `CPU`
 - reserved `CUDA`
 
+Priority:
+
+```text
+Autograd > NoGrad > CUDA > CPU
+```
+
 ### Dispatcher
 
 - key-set inference from Tensor arguments and grad mode
 - dispatch priority
-- operator lookup
 - kernel selection
 - redispatch
-- fallback behavior
-- readable dispatch explanation/introspection
+- per-key fallback
+- readable dispatch decisions through `explain()`
+- explicit unsupported-key errors
 
 ### Tensor integration
 
 The first dispatched Tensor operators are:
 
-- add
-- mul
-- matmul
-- relu
-- sum
+- `add`
+- `mul`
+- `matmul`
+- `relu`
+- `sum`
 
-Other operators remain on the previous direct `Function.apply()` path so the version delta stays easy to inspect.
+Other operators intentionally remain on the v0.4 direct `Function.apply()` path so the architectural delta is easy to inspect.
 
-### Autograd routing
+## 4. Autograd routing
 
-For dispatched differentiable operators:
+For a requires-grad operator:
 
 ```text
 Tensor op
   ↓
-Autograd key selected
+DispatchKeySet = {Autograd, CPU}
   ↓
-Autograd wrapper prepares backward Context
-  ↓
-redispatch without Autograd
-  ↓
+Autograd wrapper
+  ├── prepare backward Context
+  └── redispatch without Autograd
+            ↓
+          {CPU}
+            ↓
+        CPU numerical kernel
+            ↓
+        attach GradFn
+```
+
+The CPU backend therefore owns numerical computation only; it does not need to know dynamic-graph policy.
+
+## 5. NoGrad routing
+
+Inside `no_grad()`:
+
+```text
+{NoGrad, CPU}
+      ↓
+NoGrad fallback
+      ↓ remove NoGrad
+redispatch {CPU}
+      ↓
 CPU kernel
-  ↓
-attach GradFn to result
 ```
 
-The CPU backend therefore does not need to own dynamic-graph logic.
+This demonstrates that execution policy can change without duplicating backend math.
 
-## 4. Architecture boundaries
+## 6. New source files
 
 ```text
-Tensor
-  │ calls logical op
-  ▼
-Dispatcher
-  │
-  ├── Autograd wrapper
-  │      │
-  │      └── redispatch
-  │              ↓
-  ├── NoGrad fallback
-  │      │
-  │      └── redispatch
-  │              ↓
-  └── CPU kernel
+mini_pytorch/dispatcher.py
+mini_pytorch/kernels.py
+mini_pytorch/operator_registry.py
+tests/test_dispatcher.py
+docs/DISPATCHER.md
+examples/08_dispatcher.py
 ```
 
-Dependency direction:
+Important modified files:
 
 ```text
-Tensor → Dispatcher → registered kernels
-                  ↘ Autograd wrappers
+mini_pytorch/tensor.py
+mini_pytorch/ops.py
+mini_pytorch/__init__.py
+pyproject.toml
 ```
 
-Core backend kernels should not depend on Module/Optimizer/DataLoader.
+## 7. Validation
 
-## 5. Acceptance criteria
+Exact release-candidate head before freeze:
 
-v0.5 is complete when tests demonstrate:
+```text
+ff84a16d1fd6d65279d0c3cb472c569c707de04b
+```
 
-- [ ] operator schemas can be defined and inspected
-- [ ] duplicate schema registration fails clearly
-- [ ] kernels can be registered by DispatchKey
-- [ ] duplicate kernel registration fails clearly
-- [ ] ordinary non-grad Tensor calls route to CPU
-- [ ] grad-enabled calls route to Autograd before CPU
-- [ ] `no_grad()` selects NoGrad behavior and creates no graph
-- [ ] Autograd wrapper redispatches to CPU
-- [ ] missing operator/kernel errors are readable
-- [ ] selected Tensor APIs use Dispatcher
-- [ ] numerical and gradient behavior remains compatible with v0.4
-- [ ] full regression suite passes
-- [ ] educational dispatcher example runs
-- [ ] `docs/DISPATCHER.md` explains the mechanism
+GitHub Actions environment:
 
-## 6. Explicit non-goals
+```text
+Ubuntu 24.04
+Python 3.11.17
+NumPy 2.4.6
+```
 
-v0.5 does not implement:
+Result:
 
-- actual CUDA kernels
-- device allocation or `.to(device)`
-- production PyTorch DispatchKey complexity
-- Tensor subclass dispatch
-- functionalization
-- composite implicit/explicit autograd key families
-- Conv2d
-- DDP
-- compiler graph capture
+```text
+Ran 80 tests in 0.739s
+OK
+```
 
-The `CUDA` key is reserved to make the future backend boundary visible, not to pretend GPU support already exists.
+The suite covers:
 
-## 7. Recommended reading order
+- previous Autograd behavior
+- Dataset/DataLoader/MNIST
+- optimizers and LR schedulers
+- Storage / stride / view / version-counter semantics
+- schema/registry errors
+- CPU dispatch
+- Autograd priority
+- NoGrad fallback
+- redispatch
+- dispatched gradient correctness
+- inplace saved-version safety through dispatched operators
 
-Once implemented:
+## 8. Definition of Done
+
+- [x] operator schemas can be defined and inspected
+- [x] duplicate schema registration fails clearly
+- [x] kernels can be registered by DispatchKey
+- [x] duplicate kernel registration fails clearly
+- [x] ordinary non-grad Tensor calls route to CPU
+- [x] grad-enabled calls route to Autograd before CPU
+- [x] `no_grad()` selects NoGrad behavior and creates no graph
+- [x] Autograd wrapper redispatches to CPU
+- [x] missing operator/kernel errors are readable
+- [x] selected Tensor APIs use Dispatcher
+- [x] numerical and gradient behavior remains compatible with v0.4
+- [x] full regression suite passes
+- [x] educational dispatcher example exists
+- [x] `docs/DISPATCHER.md` explains the mechanism
+- [x] package version is `0.5.0`
+
+## 9. Recommended reading order
 
 ```text
 mini_pytorch/dispatcher.py
@@ -205,18 +241,41 @@ docs/DISPATCHER.md
 examples/08_dispatcher.py
 ```
 
-## 8. Learning goals
+## 10. Explicit non-goals
 
-By the end of v0.5, a reader should be able to explain:
+v0.5 intentionally does not implement:
 
-1. operator schema and kernel implementation are different concepts;
-2. why one operator can have multiple implementations;
+- actual CUDA kernels
+- device allocation / `.to(device)`
+- production PyTorch DispatchKey complexity
+- Tensor subclass dispatch
+- functionalization
+- Conv2d / pooling / BatchNorm
+- DDP
+- compiler graph capture
+
+The CUDA key is reserved to expose the future backend boundary, not to pretend GPU support exists.
+
+## 11. Learning goals
+
+After v0.5, the reader should be able to explain:
+
+1. schema vs kernel;
+2. why one logical operator can have multiple implementations;
 3. what a DispatchKey represents;
-4. why Autograd can be a routing layer above a backend kernel;
-5. what redispatch means and why it prevents recursive dispatch;
-6. why `no_grad()` can affect routing without changing the CPU math kernel;
-7. why a Dispatcher should exist before adding real device backends.
+4. why Autograd can be a dispatch wrapper above a backend kernel;
+5. why redispatch removes the current high-priority key;
+6. why `no_grad()` changes routing while CPU math stays identical;
+7. why Dispatcher should exist before real device/backend support.
 
-## 9. Next version direction
+## 12. Next version
 
-After v0.5 is frozen, `v0.6` can use the Dispatcher for nontrivial neural-network operators such as Conv2d, pooling, Dropout and BatchNorm rather than adding more special cases directly to Tensor.
+`v0.6` should use the Dispatcher for nontrivial neural-network operators rather than adding new special cases directly to Tensor:
+
+```text
+Conv2d
+MaxPool2d
+Dropout
+BatchNorm
+CNN MNIST
+```
