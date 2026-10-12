@@ -1,105 +1,109 @@
-# Agents.md — mini-pytorch v0.9 Branch Contract
+# Agents.md — mini-pytorch v0.9 Frozen Branch Contract
 
-> Mandatory reading before changing the `v0.9` branch.
+> Read this file before modifying the frozen `v0.9` branch.
 
 ## Branch identity
 
 - Branch: `v0.9`
 - Previous version: `v0.8`
 - Primary mental model: **Training Runtime / Serialization / Reproducibility**
-- Status: active development
-- Starting validated baseline: `123/123 tests passed`
+- Status: **frozen historical learning snapshot**
+- Package version: `0.9.0`
+- Validated baseline: `140/140 tests passed`
 
-## 1. Central question
-
-> What exact state must be captured, validated and restored so a stopped training run can continue with the same future behavior?
-
-The version is about training-state architecture, not opaque object dumping.
-
-## 2. Allowed scope
+## 1. What v0.9 teaches
 
 ```text
-model state
-optimizer state
-scheduler state
-RNG state
-training progress
-schema/version metadata
-       ↓
-CheckpointState
-       ↓
-serializer / loader
-       ↓
-deterministic resume
+Module / Optimizer / Scheduler
+            +
+         RNG state
+            +
+      TrainingState
+            ↓
+      CheckpointState
+            ↓
+metadata.json + tensors.npz
+            ↓
+     validated restore
+            ↓
+deterministic continuation
 ```
 
-Allowed:
+Frozen v0.9 includes:
 
-- framework RNG utilities;
-- migration of framework-owned random initialization/stochastic behavior to that RNG where safe;
+- framework RNG seed/state APIs;
+- framework-owned RNG integration for Linear/Conv2d/default Dropout/default RandomSampler;
 - explicit `TrainingState`;
-- logical `CheckpointState`;
-- JSON + NPZ serialization;
-- strict validation and restore orchestration;
-- small state-validation improvements to Module/Optimizer/Scheduler if required;
-- deterministic resume tests/example/docs.
+- schema-versioned `CheckpointState`;
+- inspectable JSON + NPZ serialization;
+- staged checkpoint publication;
+- model/optimizer/scheduler restore;
+- RNG restore-last semantics;
+- target-device preservation;
+- strict compatibility failures;
+- exact deterministic-resume integration proof.
 
-## 3. Forbidden scope
+## 2. Historical branch rule
 
-Do not add:
+This branch is frozen.
 
-- DDP / ProcessGroup / AllReduce;
-- distributed or sharded checkpoints;
-- remote storage backends;
-- asynchronous checkpoint workers;
-- full arbitrary mid-epoch DataLoader worker restoration;
-- real CUDA checkpoint runtime;
-- compiler graph serialization;
-- pickle as the primary educational format;
+Allowed changes only:
+
+- documentation corrections;
+- tests clarifying promised v0.9 behavior;
+- narrowly scoped correctness fixes inside the v0.9 runtime/checkpoint boundary.
+
+Forbidden:
+
+- v0.10 DDP / ProcessGroup / AllReduce work;
+- distributed/sharded checkpointing;
+- async/remote checkpoint infrastructure;
+- compiler serialization;
 - unrelated NN/operator expansion.
 
-## 4. Architecture boundary
+## 3. Frozen architecture boundary
 
-Persistence belongs above numerical execution:
+Persistence remains above numerical execution:
 
 ```text
 Tensor / Storage / Dispatcher / AutogradEngine
                  ↑
-           no checkpoint code
+           no persistence code
 
 Module / Optimizer / Scheduler
                  ↓
              state_dict
                  ↓
-             runtime/*
+          runtime/checkpoint
 ```
 
-Do not embed serialization logic in Tensor, kernels, Dispatcher or AutogradEngine.
+Do not move checkpoint behavior into Tensor, kernels, Dispatcher or AutogradEngine.
 
-## 5. RNG contract
-
-The framework RNG must make this distinction explicit:
+## 4. Frozen RNG semantics
 
 ```text
 manual_seed(S)
-→ starts a stream
+→ restart framework stream
 
 get_rng_state()
-→ captures current position
+→ snapshot current stream position
 
 set_rng_state(state)
-→ resumes current position
+→ resume saved stream position
 ```
 
-Restoring only a seed is not a valid checkpoint-resume implementation.
+Framework-owned RNG covers:
 
-Framework-owned randomness should use the framework RNG where practical. Explicit component-private RNGs may retain their own semantics, but deterministic-resume claims must clearly state which sources are captured.
+- Linear initialization;
+- Conv2d initialization;
+- Dropout with `seed=None`;
+- RandomSampler with `seed=None`.
 
-## 6. TrainingState contract
+Explicitly seeded Dropout/Sampler instances retain private NumPy generators. Frozen v0.9 does not claim their arbitrary partial iterator/private RNG position is automatically included in the global checkpoint.
 
-Training progress is runtime position, not model state.
+## 5. Frozen TrainingState semantics
 
-Required fields:
+Required runtime counters:
 
 ```text
 epoch >= 0
@@ -107,16 +111,27 @@ global_step >= 0
 batch_in_epoch >= 0
 ```
 
-Optional metadata may include `best_metric`, `run_id`, and notes.
-
-v0.9 should document an exact resume boundary. Do not claim arbitrary DataLoader iterator restoration unless sampler/worker position is genuinely captured and tested.
-
-## 7. Checkpoint schema contract
-
-Required logical sections:
+Optional small metadata:
 
 ```text
-schema_version
+best_metric
+run_id
+notes
+```
+
+TrainingState is loop position, not model/optimizer tensor state.
+
+## 6. Frozen checkpoint schema
+
+Schema version:
+
+```text
+1
+```
+
+Required sections:
+
+```text
 framework_version
 model_state
 optimizer_state
@@ -126,13 +141,9 @@ training_state
 metadata
 ```
 
-Checkpoint data must not contain live Module/Parameter/Optimizer references.
+Unknown schema versions must fail clearly rather than be interpreted heuristically.
 
-Strict loading must reject incompatible or missing state instead of silently dropping or reshaping it.
-
-## 8. Serialization contract
-
-Preferred format:
+## 7. Frozen serialization format
 
 ```text
 checkpoint/
@@ -142,100 +153,118 @@ checkpoint/
 
 Rules:
 
-- ndarray values are stored losslessly in NPZ;
-- structure and scalar metadata remain JSON-readable;
-- array references are deterministic;
-- schema version is validated before restoration;
-- malformed/missing files fail clearly;
-- writes should use a temporary staging location before publishing the checkpoint directory.
+- top-level schema/framework/training fields remain human-readable;
+- ndarrays live in NPZ;
+- nested dict/list/tuple structure is explicit in JSON;
+- integer optimizer state keys preserve their type;
+- pickle is not the primary format;
+- dtype and shape are preserved.
 
-## 9. Restore contract
-
-Use a deliberate order:
+## 8. Frozen restore order
 
 ```text
-parse + validate
-      ↓
-model.load_state_dict
-      ↓
-optimizer.load_state_dict
-      ↓
-scheduler.load_state_dict
-      ↓
+validate
+  ↓
+model
+  ↓
+optimizer
+  ↓
+scheduler
+  ↓
 TrainingState
-      ↓
-set_rng_state LAST
+  ↓
+RNG LAST
 ```
 
-RNG is restored last so construction of fresh objects does not change the future stream after resume.
+RNG restore-last is an invariant because fresh object construction may consume framework randomness.
 
-Serialized tensors are device-neutral NumPy values. Restoring into an already-configured CPU/EDU model must preserve that target device.
+## 9. Device invariant
 
-## 10. Deterministic-resume proof
+Serialized arrays are device-neutral values.
 
-Do not call v0.9 complete until CI proves:
+Restoring state into existing Parameter/Buffer objects must preserve the target object's configured device. Do not infer CPU placement merely because checkpoint storage uses NumPy arrays.
+
+## 10. Strict failure semantics
+
+Do not weaken the frozen errors for:
+
+- unknown schema;
+- missing/corrupt checkpoint component files;
+- model shape mismatch;
+- optimizer parameter-group mismatch;
+- missing target scheduler for checkpoint scheduler state in strict mode;
+- overwrite protection.
+
+Do not silently reshape or drop required state.
+
+## 11. Deterministic-resume invariant
+
+The release proof is:
 
 ```text
-uninterrupted run
-==
-interrupted → save → fresh objects → load → continue
+Run A: seed → train 1..N
+
+Run B: seed → train 1..K
+              ↓
+             save
+              ↓
+        fresh objects
+              ↓
+             load
+              ↓
+          train K+1..N
 ```
 
-Compare at least:
+Validated equality includes:
 
-- post-resume losses;
+- losses;
 - model arrays;
-- optimizer state arrays/counters;
-- scheduler LR/state;
-- training counters;
-- next framework RNG draws.
+- Adam state;
+- StepLR state/current LR;
+- TrainingState;
+- future framework RNG draws.
 
-Use a tiny deterministic dataset/model so CI stays fast.
+Do not describe v0.9 as deterministic resume if a future fix breaks this integration test.
 
-## 11. Testing contract
+## 12. Resume-boundary invariant
 
-Full regression:
+v0.9 supports controlled step/epoch-boundary resume for framework-owned state.
 
-```bash
-python -m unittest discover -s tests -v
+It does not claim exact restoration of arbitrary partially-consumed multi-worker DataLoader iterators, worker RNGs, external libraries or explicitly private component RNGs.
+
+## 13. Validation baseline
+
+Validated release-candidate implementation:
+
+```text
+45e09013dfecfb86055220c1e3be41928cf7bc7d
 ```
 
-New tests should cover:
+GitHub Actions:
 
-- RNG reproducibility/state restore;
-- TrainingState validation;
-- generic nested checkpoint serialization;
-- model/optimizer/scheduler restore;
-- target device preservation;
-- schema errors;
-- missing/corrupt files;
-- optimizer group mismatch;
-- scheduler presence mismatch;
-- deterministic resume.
+```text
+Ubuntu 24.04
+Python 3.11.17
+NumPy 2.4.6
+140 tests
+OK
+```
 
-Exact final v0.9 branch-head GitHub Actions must be green before freeze.
+Any future narrowly scoped v0.9 fix must rerun the complete suite and pass GitHub Actions on the exact modified branch HEAD.
 
-## 12. Documentation contract
-
-Before freeze update:
+## 14. Documentation map
 
 ```text
 README.md
 version.md
-Agents.md
+mini_pytorch/runtime/rng.py
+mini_pytorch/runtime/state.py
+mini_pytorch/runtime/checkpoint.py
+tests/test_runtime_checkpoint.py
 docs/TRAINING_RUNTIME.md
 examples/12_checkpoint_resume.py
-mini_pytorch/__init__.py
-pyproject.toml
 ```
 
-## 13. Freeze rule
+## 15. Next-version boundary
 
-When exact final branch HEAD is green:
-
-1. mark `version.md` frozen;
-2. mark this `Agents.md` frozen;
-3. do not modify framework code again;
-4. fast-forward validated v0.9 into `main`;
-5. restore canonical main README/Agents/Plan;
-6. advance roadmap to `v0.10 Distributed / DDP Concepts`.
+Distributed synchronization belongs to `v0.10`, created from the latest validated `main`, not from this frozen historical branch.
