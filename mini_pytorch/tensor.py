@@ -1,11 +1,11 @@
 """Tensor object: Storage-backed layout metadata + autograd + dispatched operators."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 
-from .autograd import Context, GradFn, is_grad_enabled
+from .autograd import Context, GradFn, RemovableHandle, is_grad_enabled
 from .device import Device, as_device
 from .storage import Storage, contiguous_strides
 
@@ -82,6 +82,8 @@ class Tensor:
         self.requires_grad = bool(requires_grad)
         self.grad: Optional[np.ndarray] = None
         self._grad_fn: Optional[GradFn] = None
+        self._retain_grad = False
+        self._backward_hooks: dict[int, Callable[[np.ndarray], Any]] = {}
         self.name = name
 
     @classmethod
@@ -104,6 +106,8 @@ class Tensor:
         obj.requires_grad = bool(requires_grad)
         obj.grad = None
         obj._grad_fn = None
+        obj._retain_grad = False
+        obj._backward_hooks = {}
         obj.name = name
         return obj
 
@@ -224,62 +228,65 @@ class Tensor:
     def is_leaf(self) -> bool:
         return self.requires_grad and self._grad_fn is None
 
-    def backward(self, grad: Optional[Any] = None) -> None:
+    @property
+    def retains_grad(self) -> bool:
+        return bool(self._retain_grad and not self.is_leaf)
+
+    def backward(
+        self,
+        grad: Optional[Any] = None,
+        *,
+        retain_graph: bool = False,
+        create_graph: bool = False,
+    ) -> None:
+        from .autograd_engine import engine
+
+        engine.backward(
+            self,
+            grad,
+            retain_graph=bool(retain_graph),
+            create_graph=bool(create_graph),
+        )
+
+    def retain_grad(self) -> None:
+        """Request persistent `.grad` materialization for a non-leaf Tensor."""
+
         if not self.requires_grad:
-            raise RuntimeError("cannot call backward() on a tensor that does not require grad")
+            raise RuntimeError("cannot retain_grad on a tensor that does not require grad")
+        if self.is_leaf:
+            return
+        self._retain_grad = True
 
-        if grad is None:
-            if self.data.size != 1:
-                raise RuntimeError("grad must be specified for non-scalar outputs")
-            seed = np.ones_like(self.data)
-        else:
-            seed = _as_array(grad, dtype=self.data.dtype)
-            if seed.shape != self.data.shape:
-                raise ValueError(f"gradient shape {seed.shape} != tensor shape {self.data.shape}")
+    def register_hook(self, hook: Callable[[np.ndarray], Any]) -> RemovableHandle:
+        """Register a backward gradient hook and return a removable handle."""
 
-        topo: list[Tensor] = []
-        visited: set[int] = set()
+        if not self.requires_grad:
+            raise RuntimeError("cannot register a hook on a tensor that does not require grad")
+        if not callable(hook):
+            raise TypeError("hook must be callable")
+        handle = RemovableHandle(self)
+        self._backward_hooks[handle.id] = hook
+        return handle
 
-        def build(node: Tensor) -> None:
-            node_id = id(node)
-            if node_id in visited:
-                return
-            visited.add(node_id)
-            if node._grad_fn is not None:
-                for parent in node._grad_fn.parents:
-                    build(parent)
-            topo.append(node)
-
-        build(self)
-        local_grads: dict[int, np.ndarray] = {id(self): seed}
-
-        for node in reversed(topo):
-            node_grad = local_grads.get(id(node))
-            if node_grad is None:
+    def _run_backward_hooks(self, grad: np.ndarray) -> np.ndarray:
+        current = np.asarray(grad, dtype=self.data.dtype)
+        for hook in tuple(self._backward_hooks.values()):
+            replacement = hook(current.copy())
+            if replacement is None:
                 continue
-            if node.requires_grad:
-                if node.is_leaf:
-                    node.grad = node_grad.copy() if node.grad is None else node.grad + node_grad
-                else:
-                    node.grad = None
-            if node._grad_fn is None:
-                continue
-
-            node._grad_fn.ctx.check_saved_versions()
-            parent_grads = node._grad_fn.function.backward(node._grad_fn.ctx, node_grad)
-            if not isinstance(parent_grads, tuple):
-                parent_grads = (parent_grads,)
-            if len(parent_grads) != len(node._grad_fn.parents):
+            if isinstance(replacement, Tensor):
+                if replacement.device != self.device:
+                    raise RuntimeError(
+                        f"hook returned gradient on {replacement.device}; expected {self.device}"
+                    )
+                replacement = replacement.data
+            candidate = np.asarray(replacement, dtype=self.data.dtype)
+            if candidate.shape != self.data.shape:
                 raise RuntimeError(
-                    f"{node._grad_fn.function.__name__}.backward returned "
-                    f"{len(parent_grads)} grads for {len(node._grad_fn.parents)} parents"
+                    f"hook returned gradient shape {candidate.shape}; expected {self.data.shape}"
                 )
-            for parent, parent_grad in zip(node._grad_fn.parents, parent_grads):
-                if parent_grad is None or not parent.requires_grad:
-                    continue
-                parent_grad = np.asarray(parent_grad, dtype=parent.data.dtype)
-                key = id(parent)
-                local_grads[key] = parent_grad if key not in local_grads else local_grads[key] + parent_grad
+            current = candidate
+        return current
 
     def zero_grad(self) -> None:
         self.grad = None
