@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import math
-import numpy as np
 
 from .module import Module, Parameter
+from ..runtime.rng import uniform
 from ..tensor import Tensor
 
 
@@ -20,10 +20,10 @@ class Linear(Module):
 
         bound = 1.0 / math.sqrt(in_features)
         self.weight = Parameter(
-            np.random.uniform(-bound, bound, size=(out_features, in_features))
+            uniform(-bound, bound, size=(out_features, in_features))
         )
         if bias:
-            self.bias = Parameter(np.random.uniform(-bound, bound, size=(out_features,)))
+            self.bias = Parameter(uniform(-bound, bound, size=(out_features,)))
         else:
             self.register_parameter("bias", None)
 
