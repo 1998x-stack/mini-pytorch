@@ -1,4 +1,4 @@
-"""Differentiable tensor operations used by :mod:`mini_pytorch.tensor`."""
+"""Differentiable tensor operations for mini-pytorch v0.4."""
 from __future__ import annotations
 
 import numpy as np
@@ -7,11 +7,6 @@ from .autograd import Context, Function
 
 
 def unbroadcast(grad: np.ndarray, target_shape: tuple[int, ...]) -> np.ndarray:
-    """Sum a broadcasted gradient back to the original operand shape.
-
-    NumPy broadcasting can expand dimensions implicitly during forward. During
-    backward, the inverse operation is summation over those expanded axes.
-    """
     grad = np.asarray(grad)
     while grad.ndim > len(target_shape):
         grad = grad.sum(axis=0)
@@ -23,41 +18,35 @@ def unbroadcast(grad: np.ndarray, target_shape: tuple[int, ...]) -> np.ndarray:
 
 class Add(Function):
     @staticmethod
-    def forward(ctx: Context, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    def forward(ctx: Context, a, b):
         ctx.a_shape, ctx.b_shape = a.shape, b.shape
         return a + b
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
-        return (
-            unbroadcast(grad_output, ctx.a_shape),
-            unbroadcast(grad_output, ctx.b_shape),
-        )
+    def backward(ctx: Context, grad_output):
+        return unbroadcast(grad_output, ctx.a_shape), unbroadcast(grad_output, ctx.b_shape)
 
 
 class Sub(Function):
     @staticmethod
-    def forward(ctx: Context, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    def forward(ctx: Context, a, b):
         ctx.a_shape, ctx.b_shape = a.shape, b.shape
         return a - b
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
-        return (
-            unbroadcast(grad_output, ctx.a_shape),
-            unbroadcast(-grad_output, ctx.b_shape),
-        )
+    def backward(ctx: Context, grad_output):
+        return unbroadcast(grad_output, ctx.a_shape), unbroadcast(-grad_output, ctx.b_shape)
 
 
 class Mul(Function):
     @staticmethod
-    def forward(ctx: Context, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    def forward(ctx: Context, a, b):
         ctx.save_for_backward(a, b)
         ctx.a_shape, ctx.b_shape = a.shape, b.shape
         return a * b
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
+    def backward(ctx: Context, grad_output):
         a, b = ctx.saved_tensors
         return (
             unbroadcast(grad_output * b, ctx.a_shape),
@@ -67,13 +56,13 @@ class Mul(Function):
 
 class Div(Function):
     @staticmethod
-    def forward(ctx: Context, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    def forward(ctx: Context, a, b):
         ctx.save_for_backward(a, b)
         ctx.a_shape, ctx.b_shape = a.shape, b.shape
         return a / b
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
+    def backward(ctx: Context, grad_output):
         a, b = ctx.saved_tensors
         return (
             unbroadcast(grad_output / b, ctx.a_shape),
@@ -83,37 +72,30 @@ class Div(Function):
 
 class Neg(Function):
     @staticmethod
-    def forward(ctx: Context, a: np.ndarray) -> np.ndarray:
+    def forward(ctx: Context, a):
         return -a
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
+    def backward(ctx: Context, grad_output):
         return (-grad_output,)
 
 
 class Pow(Function):
     @staticmethod
-    def forward(ctx: Context, a: np.ndarray, *, exponent: float) -> np.ndarray:
+    def forward(ctx: Context, a, *, exponent: float):
         ctx.save_for_backward(a)
         ctx.exponent = exponent
         return a ** exponent
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
+    def backward(ctx: Context, grad_output):
         (a,) = ctx.saved_tensors
-        p = ctx.exponent
-        return (grad_output * p * (a ** (p - 1)),)
+        return (grad_output * ctx.exponent * (a ** (ctx.exponent - 1)),)
 
 
 class MatMul(Function):
-    """2-D matrix multiplication.
-
-    Keeping v1 restricted to matrices makes its derivative easy to inspect.
-    Batched matmul can later be added without changing the public Tensor API.
-    """
-
     @staticmethod
-    def forward(ctx: Context, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    def forward(ctx: Context, a, b):
         if a.ndim != 2 or b.ndim != 2:
             raise ValueError("mini_pytorch MatMul currently supports 2-D tensors only")
         if a.shape[1] != b.shape[0]:
@@ -122,31 +104,22 @@ class MatMul(Function):
         return a @ b
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
+    def backward(ctx: Context, grad_output):
         a, b = ctx.saved_tensors
         return grad_output @ b.T, a.T @ grad_output
 
 
 class Sum(Function):
     @staticmethod
-    def forward(
-        ctx: Context,
-        a: np.ndarray,
-        *,
-        axis=None,
-        keepdims: bool = False,
-    ) -> np.ndarray:
-        ctx.input_shape = a.shape
-        ctx.axis = axis
-        ctx.keepdims = keepdims
+    def forward(ctx: Context, a, *, axis=None, keepdims: bool = False):
+        ctx.input_shape, ctx.axis, ctx.keepdims = a.shape, axis, keepdims
         return a.sum(axis=axis, keepdims=keepdims)
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
+    def backward(ctx: Context, grad_output):
         grad = np.asarray(grad_output)
         if ctx.axis is None:
             return (np.ones(ctx.input_shape, dtype=grad.dtype) * grad,)
-
         axes = ctx.axis if isinstance(ctx.axis, tuple) else (ctx.axis,)
         axes = tuple(ax if ax >= 0 else ax + len(ctx.input_shape) for ax in axes)
         if not ctx.keepdims:
@@ -157,16 +130,8 @@ class Sum(Function):
 
 class Mean(Function):
     @staticmethod
-    def forward(
-        ctx: Context,
-        a: np.ndarray,
-        *,
-        axis=None,
-        keepdims: bool = False,
-    ) -> np.ndarray:
-        ctx.input_shape = a.shape
-        ctx.axis = axis
-        ctx.keepdims = keepdims
+    def forward(ctx: Context, a, *, axis=None, keepdims: bool = False):
+        ctx.input_shape, ctx.axis, ctx.keepdims = a.shape, axis, keepdims
         if axis is None:
             ctx.count = a.size
         else:
@@ -176,11 +141,10 @@ class Mean(Function):
         return a.mean(axis=axis, keepdims=keepdims)
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
+    def backward(ctx: Context, grad_output):
         grad = np.asarray(grad_output)
         if ctx.axis is None:
             return (np.ones(ctx.input_shape, dtype=grad.dtype) * grad / ctx.count,)
-
         axes = ctx.axis if isinstance(ctx.axis, tuple) else (ctx.axis,)
         axes = tuple(ax if ax >= 0 else ax + len(ctx.input_shape) for ax in axes)
         if not ctx.keepdims:
@@ -189,62 +153,122 @@ class Mean(Function):
         return (np.broadcast_to(grad, ctx.input_shape) / ctx.count,)
 
 
+class View(Function):
+    @staticmethod
+    def forward(ctx: Context, a, *, shape: tuple[int, ...]):
+        ctx.input_shape = a.shape
+        out = a.reshape(shape)
+        if not np.shares_memory(out, a):
+            raise RuntimeError(
+                "view size is not compatible with the tensor's size and stride; "
+                "use reshape() to allow a copy"
+            )
+        return out
+
+    @staticmethod
+    def backward(ctx: Context, grad_output):
+        return (grad_output.reshape(ctx.input_shape),)
+
+
 class Reshape(Function):
     @staticmethod
-    def forward(ctx: Context, a: np.ndarray, *, shape: tuple[int, ...]) -> np.ndarray:
+    def forward(ctx: Context, a, *, shape: tuple[int, ...]):
         ctx.input_shape = a.shape
         return a.reshape(shape)
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
+    def backward(ctx: Context, grad_output):
         return (grad_output.reshape(ctx.input_shape),)
 
 
-class Transpose2D(Function):
+class Transpose(Function):
     @staticmethod
-    def forward(ctx: Context, a: np.ndarray) -> np.ndarray:
-        if a.ndim != 2:
-            raise ValueError(".T currently supports 2-D tensors only")
-        return a.T
+    def forward(ctx: Context, a, *, dim0: int, dim1: int):
+        ndim = a.ndim
+        dim0 = dim0 % ndim
+        dim1 = dim1 % ndim
+        ctx.dim0, ctx.dim1 = dim0, dim1
+        return np.swapaxes(a, dim0, dim1)
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
-        return (grad_output.T,)
+    def backward(ctx: Context, grad_output):
+        return (np.swapaxes(grad_output, ctx.dim0, ctx.dim1),)
+
+
+class Permute(Function):
+    @staticmethod
+    def forward(ctx: Context, a, *, dims: tuple[int, ...]):
+        if len(dims) != a.ndim or set(dims) != set(range(a.ndim)):
+            raise ValueError(f"invalid permutation {dims} for tensor with {a.ndim} dims")
+        ctx.inverse = tuple(np.argsort(dims).tolist())
+        return np.transpose(a, axes=dims)
+
+    @staticmethod
+    def backward(ctx: Context, grad_output):
+        return (np.transpose(grad_output, axes=ctx.inverse),)
+
+
+class Slice(Function):
+    @staticmethod
+    def forward(ctx: Context, a, *, index):
+        if isinstance(index, (list, np.ndarray)):
+            raise TypeError("v0.4 supports basic indexing views, not advanced indexing")
+        if isinstance(index, tuple) and any(isinstance(x, (list, np.ndarray)) for x in index):
+            raise TypeError("v0.4 supports basic indexing views, not advanced indexing")
+        ctx.input_shape = a.shape
+        ctx.index = index
+        return a[index]
+
+    @staticmethod
+    def backward(ctx: Context, grad_output):
+        grad = np.zeros(ctx.input_shape, dtype=np.asarray(grad_output).dtype)
+        grad[ctx.index] = grad_output
+        return (grad,)
+
+
+class Contiguous(Function):
+    @staticmethod
+    def forward(ctx: Context, a):
+        return np.ascontiguousarray(a).copy()
+
+    @staticmethod
+    def backward(ctx: Context, grad_output):
+        return (np.asarray(grad_output),)
 
 
 class ReLU(Function):
     @staticmethod
-    def forward(ctx: Context, a: np.ndarray) -> np.ndarray:
+    def forward(ctx: Context, a):
         mask = a > 0
         ctx.save_for_backward(mask)
         return np.maximum(a, 0)
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
+    def backward(ctx: Context, grad_output):
         (mask,) = ctx.saved_tensors
         return (grad_output * mask,)
 
 
 class Exp(Function):
     @staticmethod
-    def forward(ctx: Context, a: np.ndarray) -> np.ndarray:
+    def forward(ctx: Context, a):
         out = np.exp(a)
         ctx.save_for_backward(out)
         return out
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
+    def backward(ctx: Context, grad_output):
         (out,) = ctx.saved_tensors
         return (grad_output * out,)
 
 
 class Log(Function):
     @staticmethod
-    def forward(ctx: Context, a: np.ndarray) -> np.ndarray:
+    def forward(ctx: Context, a):
         ctx.save_for_backward(a)
         return np.log(a)
 
     @staticmethod
-    def backward(ctx: Context, grad_output: np.ndarray):
+    def backward(ctx: Context, grad_output):
         (a,) = ctx.saved_tensors
         return (grad_output / a,)
