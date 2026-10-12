@@ -1,9 +1,7 @@
-"""Educational operator dispatcher for mini-pytorch v0.5.
+"""Educational operator dispatcher for mini-pytorch.
 
-The real PyTorch dispatcher is substantially more sophisticated.  This module
-keeps only the concepts needed to make the routing model visible:
-
-logical operator -> schema -> DispatchKeySet -> kernel/fallback -> redispatch.
+v0.7 adds device-aware backend routing while keeping Autograd/NoGrad as policy
+keys above concrete backend keys.
 """
 from __future__ import annotations
 
@@ -25,7 +23,8 @@ class DispatchKey(str, Enum):
 
     AUTOGRAD = "Autograd"
     NOGRAD = "NoGrad"
-    CUDA = "CUDA"  # reserved for a later device/backend version
+    CUDA = "CUDA"  # reserved for a future real accelerator experiment
+    EDU = "EDU"    # deterministic simulated backend used by v0.7
     CPU = "CPU"
 
 
@@ -33,8 +32,14 @@ _PRIORITY: tuple[DispatchKey, ...] = (
     DispatchKey.AUTOGRAD,
     DispatchKey.NOGRAD,
     DispatchKey.CUDA,
+    DispatchKey.EDU,
     DispatchKey.CPU,
 )
+
+_DEVICE_TO_KEY = {
+    "cpu": DispatchKey.CPU,
+    "edu": DispatchKey.EDU,
+}
 
 
 @dataclass(frozen=True)
@@ -73,8 +78,6 @@ class DispatchKeySet:
 
 @dataclass(frozen=True)
 class OperatorSchema:
-    """Metadata describing one logical operator overload."""
-
     namespace: str
     name: str
     overload: str = "default"
@@ -115,7 +118,6 @@ class Dispatcher:
         self._kernels: dict[str, dict[DispatchKey, Kernel]] = {}
         self._fallbacks: dict[DispatchKey, Fallback] = {}
 
-    # ---------- schema / registration ----------
     def define(self, schema: OperatorSchema) -> OperatorSchema:
         qname = schema.qualified_name
         if qname in self._schemas:
@@ -139,7 +141,6 @@ class Dispatcher:
             raise DispatchError(f"fallback already registered for {key.value}")
         self._fallbacks[key] = fallback
 
-    # ---------- introspection ----------
     def schema(self, operator: str) -> OperatorSchema:
         try:
             return self._schemas[operator]
@@ -158,7 +159,6 @@ class Dispatcher:
     def list_operators(self) -> tuple[str, ...]:
         return tuple(sorted(self._schemas))
 
-    # ---------- key inference ----------
     @staticmethod
     def _iter_tensors(value):
         from .tensor import Tensor
@@ -176,14 +176,27 @@ class Dispatcher:
         from .autograd import is_grad_enabled
 
         tensors = list(self._iter_tensors(args)) + list(self._iter_tensors(kwargs))
-        keys: list[DispatchKey] = [DispatchKey.CPU]
+        devices = {tensor.device for tensor in tensors}
+        if len(devices) > 1:
+            rendered = ", ".join(sorted(str(device) for device in devices))
+            raise DispatchError(f"operator received tensors on different devices: {rendered}")
+
+        if devices:
+            device = next(iter(devices))
+            try:
+                backend_key = _DEVICE_TO_KEY[device.type]
+            except KeyError as exc:
+                raise DispatchError(f"no dispatch key for device {device}") from exc
+        else:
+            backend_key = DispatchKey.CPU
+
+        keys: list[DispatchKey] = [backend_key]
         if not is_grad_enabled():
             keys.append(DispatchKey.NOGRAD)
         elif any(t.requires_grad for t in tensors):
             keys.append(DispatchKey.AUTOGRAD)
         return DispatchKeySet(keys)
 
-    # ---------- dispatch ----------
     def _decision(self, operator: str, keyset: DispatchKeySet) -> DispatchDecision:
         self.schema(operator)
         if not keyset:
@@ -195,9 +208,6 @@ class Dispatcher:
                 return DispatchDecision(operator, keyset, key, "kernel")
             if key in self._fallbacks:
                 return DispatchDecision(operator, keyset, key, "fallback")
-            # If a key is explicitly present but has no implementation/fallback,
-            # fail rather than silently skipping it. This makes unsupported
-            # future backends (for example CUDA in v0.5) obvious.
             raise DispatchError(
                 f"no kernel or fallback for {operator} at dispatch key {key.value}; "
                 f"available kernels={[k.value for k in self.registered_keys(operator)]}"
@@ -229,13 +239,7 @@ class Library:
         self.namespace = namespace
         self.dispatcher = dispatcher
 
-    def define(
-        self,
-        name: str,
-        *,
-        overload: str = "default",
-        signature: str = "",
-    ) -> str:
+    def define(self, name: str, *, overload: str = "default", signature: str = "") -> str:
         schema = OperatorSchema(self.namespace, name, overload, signature)
         self.dispatcher.define(schema)
         return schema.qualified_name
@@ -250,6 +254,4 @@ dispatcher = Dispatcher()
 
 
 def call(operator: str, *args, **kwargs):
-    """Call a logical operator through the process-global dispatcher."""
-
     return dispatcher.dispatch(operator, *args, **kwargs)
