@@ -6,24 +6,30 @@ from typing import Dict, Iterator, Optional
 
 import numpy as np
 
+from ..device import Device
 from ..tensor import Tensor
 
 
 class Parameter(Tensor):
     """A Tensor that is automatically registered when assigned to a Module."""
 
-    def __init__(self, data, *, requires_grad: bool = True, name: Optional[str] = None):
+    def __init__(
+        self,
+        data,
+        *,
+        requires_grad: bool = True,
+        name: Optional[str] = None,
+        device: Device | str | None = None,
+    ):
         if isinstance(data, Tensor):
+            if device is None:
+                device = data.device
             data = data.data
-        super().__init__(data, requires_grad=requires_grad, name=name)
+        super().__init__(data, requires_grad=requires_grad, name=name, device=device)
 
 
 class Module:
-    """Base class for all neural-network modules.
-
-    Assigning a ``Parameter`` or another ``Module`` to an attribute registers it,
-    which enables recursive ``parameters()``, ``state_dict()``, and train/eval.
-    """
+    """Base class for all neural-network modules."""
 
     def __init__(self) -> None:
         object.__setattr__(self, "_parameters", OrderedDict())
@@ -112,6 +118,42 @@ class Module:
 
     def eval(self) -> "Module":
         return self.train(False)
+
+    @staticmethod
+    def _move_tensor_storage_(tensor: Tensor, device: Device | str) -> None:
+        if tensor.device == Device(device):
+            return
+        moved = Tensor(
+            tensor.data,
+            requires_grad=tensor.requires_grad,
+            dtype=tensor.dtype,
+            name=tensor.name,
+            device=device,
+        )
+        tensor._storage = moved._storage
+        tensor._shape = moved._shape
+        tensor._strides = moved._strides
+        tensor._storage_offset = moved._storage_offset
+        tensor.data = tensor._make_numpy_view()
+        tensor._grad_fn = None
+        if tensor.grad is not None:
+            tensor.grad = np.array(tensor.grad, copy=True)
+
+    def to(self, device: Device | str) -> "Module":
+        """Move Parameters and Buffers in place while preserving module identity.
+
+        Call this before constructing an optimizer, mirroring the common
+        PyTorch workflow. Parameters remain leaf Parameter objects.
+        """
+
+        for parameter in self._parameters.values():
+            if parameter is not None:
+                self._move_tensor_storage_(parameter, device)
+        for buffer in self._buffers.values():
+            self._move_tensor_storage_(buffer, device)
+        for module in self._modules.values():
+            module.to(device)
+        return self
 
     def zero_grad(self, set_to_none: bool = True) -> None:
         for parameter in self.parameters():
