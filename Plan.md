@@ -29,9 +29,9 @@ Advanced Autograd Engine
       ↓
 Training Runtime / Reproducibility
       ↓
-Distributed / DDP concepts
+Distributed / DDP Concepts
       ↓
-Graph capture / compiler stack
+Graph IR / compiler stack
 ```
 
 One version should introduce one dominant mental model and preserve earlier invariants.
@@ -48,7 +48,7 @@ Tensor → Function → dynamic graph → backward → Parameter → Module → 
 
 Key mechanisms:
 
-- Tensor / requires_grad;
+- Tensor / `requires_grad`;
 - reverse-mode autodiff;
 - dynamic graph;
 - gradient accumulation;
@@ -133,7 +133,7 @@ Key mechanisms:
 - dispatch priority;
 - fallbacks;
 - redispatch;
-- CPU numerical kernels;
+- backend numerical kernels;
 - Autograd wrappers above backend kernels.
 
 Validated baseline: **80 tests**.
@@ -209,569 +209,717 @@ VJP  graph lifetime  hooks
 leaf grad       retained non-leaf grad
 ```
 
-Implemented:
+Key mechanisms:
 
-- explicit `AutogradEngine` separated from Tensor;
-- topological traversal and Engine-local gradient accumulation;
+- explicit AutogradEngine separated from Tensor;
+- topological traversal and transient local gradients;
 - Context release state;
-- default graph release after successful backward;
 - repeated-backward failure after release;
 - `retain_graph=True`;
 - non-leaf `retain_grad()`;
-- gradient hooks;
-- removable hook handles;
-- hook gradient transformation;
-- shared-node accumulation;
-- public custom `Function / Context / GradFn` teaching workflow;
-- saved-version safety preserved;
-- CPU/EDU parity;
-- explicit `create_graph=True` limitation rather than fake higher-order AD.
+- gradient hooks + removable handles;
+- custom Function teaching path;
+- explicit higher-order-gradient boundary.
 
 Validated baseline: **123 tests**.
 
-Architecture docs:
+## v0.9 — Training Runtime / Serialization / Reproducibility ✅
 
 ```text
-docs/AUTOGRAD_ENGINE.md
-examples/11_autograd_engine.py
+Module / Optimizer / Scheduler
+            +
+       framework RNG
+            +
+       TrainingState
+            ↓
+      CheckpointState
+            ↓
+metadata.json + tensors.npz
+            ↓
+       fresh objects
+            ↓
+          restore
+            ↓
+deterministic continuation
 ```
+
+Implemented:
+
+- framework PCG64 RNG;
+- `manual_seed / get_rng_state / set_rng_state`;
+- framework RNG integration for Linear/Conv2d/default Dropout/default RandomSampler;
+- explicit `TrainingState`;
+- schema-versioned `CheckpointState`;
+- inspectable JSON + NPZ serialization;
+- nested optimizer state encoding without pickle;
+- staged/rename checkpoint publication;
+- model/optimizer/scheduler restoration;
+- RNG restore-last semantics;
+- target CPU/EDU device preservation;
+- strict schema/shape/group/scheduler failures;
+- deterministic uninterrupted-vs-resumed integration proof.
+
+Central proof compares exact:
+
+```text
+loss trajectory
+model state
+Adam moments/counters
+StepLR state/current LR
+TrainingState
+future framework RNG draws
+```
+
+Validated baseline: **140 tests**.
 
 ---
 
-# 3. Current next milestone — v0.9 Training Runtime / Serialization / Reproducibility 🎯
+# 3. Current next milestone — v0.10 Distributed / DDP Concepts 🎯
 
-## 3.1 Why v0.9 comes now
+## 3.1 Why distributed comes now
 
-By v0.8 the framework can already express a realistic training stack:
-
-```text
-Dataset / DataLoader
-      ↓
-Module / Parameters
-      ↓
-Dispatcher / Backend
-      ↓
-Autograd Engine
-      ↓
-Optimizer
-      ↓
-LR Scheduler
-```
-
-But a training process is more than its model weights.
-
-If execution stops after step 731 and only the model parameters are saved, the continuation may differ because the following state can be lost:
+By v0.9, a single training process has explicit mechanisms for:
 
 ```text
-optimizer moments / momentum
-scheduler epoch/step
-random-number generator state
-sampler/shuffle progression
-current epoch
-global step
-best metric / runtime metadata
+Tensor execution
+Autograd gradient generation
+Tensor gradient hooks
+Optimizer state
+Data sampling
+Device/backend placement
+Training runtime/checkpoint state
 ```
 
-The central v0.9 question is:
+The next architectural question is no longer how one process trains, but how multiple replicas cooperate.
 
-> What exact state must be captured, validated and restored so a stopped training run can continue with the same future behavior?
+Suppose two replicas start from identical parameters:
 
-The milestone is **training-state architecture**, not merely adding `pickle.dump()`.
+```text
+Replica rank 0              Replica rank 1
+      │                            │
+ batch A                        batch B
+      │                            │
+ forward                        forward
+      │                            │
+ backward                       backward
+      │                            │
+ grad_A                         grad_B
+```
+
+If each optimizer immediately uses its own local gradient:
+
+```text
+parameter_0' != parameter_1'
+```
+
+The replicas diverge.
+
+DDP's core idea is conceptually:
+
+```text
+local gradients
+      ↓
+collective reduction
+      ↓
+shared averaged gradients
+      ↓
+identical optimizer updates
+```
+
+The central v0.10 question is:
+
+> How should dataset partitioning, rank/world-size semantics, gradient-ready events, gradient buckets and collective reduction compose so multiple replicas remain equivalent after every optimizer step?
 
 ---
 
 ## 3.2 Target architecture
 
 ```text
-                    Training process
-                          │
-          ┌───────────────┼────────────────┐
-          ▼               ▼                ▼
-       Module          Optimizer        Scheduler
-          │               │                │
-          └───────────────┼────────────────┘
-                          │
-                          ▼
-                     TrainingState
-              ┌───────────┼────────────┐
-              ▼           ▼            ▼
-          progress      RNG state    metadata
-              │           │            │
-              └───────────┼────────────┘
-                          ▼
-                    CheckpointState
-                          │
-                  schema validation
-                          │
-                          ▼
-               serializer / deserializer
-                          │
-                    NPZ + JSON-like
-                          │
-                          ▼
-                     checkpoint
-                          │
-                          ▼
-                         load
-                          │
-                  validate + restore
-                          │
-                          ▼
-                deterministic continue
+                 global Dataset
+                      │
+                      ▼
+              DistributedSampler
+              ┌───────┴────────┐
+              ▼                ▼
+           rank 0            rank 1
+           indices           indices
+              │                │
+              ▼                ▼
+          replica 0         replica 1
+              │                │
+          local loss        local loss
+              │                │
+              ▼                ▼
+       AutogradEngine     AutogradEngine
+              │                │
+              ▼                ▼
+      parameter hooks    parameter hooks
+              │                │
+              └──────┬─────────┘
+                     ▼
+                 DDP Reducer
+                     │
+             gradient buckets
+                     │
+                     ▼
+                ProcessGroup
+                     │
+                  all_reduce
+                     │
+                     ▼
+             averaged gradients
+                     │
+                     ▼
+             Optimizer.step()
+                     │
+                     ▼
+          replica parameters equal
 ```
 
-Runtime state collection should be separate from file-format mechanics.
+Keep the following responsibilities separate:
+
+```text
+DistributedSampler
+→ which data indices belong to a rank
+
+Reducer
+→ which parameter gradients are ready / grouped
+
+ProcessGroup
+→ how values from ranks are collectively combined
+
+Optimizer
+→ how synchronized gradients update parameters
+```
 
 ---
 
-# 3.3 v0.9.1 — Explicit RNG / Seed State
+## 3.3 v0.10.1 — Distributed context: rank and world_size
 
-## Problem
-
-Current examples may seed NumPy or individual components, but reproducibility is not a first-class framework concept.
-
-A training checkpoint cannot claim deterministic resume if random choices after load diverge.
-
-## Implement
-
-Introduce a small framework RNG abstraction or explicit RNG-state utilities.
+Introduce a small explicit distributed context/value object.
 
 Possible API:
 
 ```python
-manual_seed(42)
-get_rng_state()
-set_rng_state(state)
-```
-
-The exact implementation should stay small and NumPy-first.
-
-Important distinction:
-
-```text
-seed
-!=
-current RNG state
-```
-
-A seed initializes a random stream. A checkpoint must usually restore the **current stream position/state**, not merely replay the original seed.
-
-## Required semantics
-
-- deterministic seed initialization;
-- export current RNG state;
-- restore state;
-- repeated sequence after restore matches exactly;
-- state is serializable without opaque Python object assumptions where practical;
-- explicit boundary around random sources not controlled by mini-pytorch.
-
-## Scope integration
-
-Review randomness in:
-
-- parameter initialization;
-- Dropout;
-- RandomSampler / DataLoader shuffle;
-- any training example using NumPy random generators.
-
-Do not silently claim process-wide determinism if an external source is not captured.
-
----
-
-# 3.4 v0.9.2 — Training Progress as State
-
-Training-loop counters should become explicit state rather than local variables spread through examples.
-
-Introduce an educational structure such as:
-
-```python
-TrainingState(
-    epoch=...,
-    global_step=...,
-    batch_in_epoch=...,
-    best_metric=...,
+DistributedContext(
+    rank=0,
+    world_size=2,
 )
 ```
 
-Core required fields:
+Required validation:
 
 ```text
-epoch
-global_step
-batch_in_epoch or resume-boundary policy
+world_size >= 1
+0 <= rank < world_size
 ```
 
-Optional educational metadata:
+The object should make rank/world-size explicit rather than relying on hidden globals or environment variables for the educational version.
+
+Concepts to document:
 
 ```text
-best_metric
-run_id
-notes
+world_size
+→ number of participating replicas
+
+rank
+→ this replica's unique position in [0, world_size)
 ```
 
-Do not mix Tensor/model weights into this progress object; it represents **runtime position**, not all checkpoint payload.
+Tests:
 
-## Resume-boundary decision
+- valid contexts;
+- invalid negative rank;
+- rank >= world_size;
+- invalid world_size.
 
-v0.9 must explicitly choose and document one of:
+---
+
+## 3.4 v0.10.2 — ProcessGroup and collective semantics
+
+Introduce an abstract ProcessGroup boundary.
+
+Conceptual interface:
+
+```python
+class ProcessGroup:
+    def all_reduce(...):
+        ...
+```
+
+Do **not** tie DDP directly to NumPy global helpers or network code.
+
+For v0.10 use a deterministic in-process implementation, e.g.:
 
 ```text
-epoch-boundary resume
+InProcessCollectiveWorld
+        │
+        ├── contribution from rank 0
+        ├── contribution from rank 1
+        └── ...
+        ↓
+ProcessGroup collective round
+        ↓
+sum / mean result
+```
+
+### Collective invariants
+
+For one logical all-reduce round, all ranks must agree on:
+
+- world size;
+- collective sequence/round id;
+- tensor shape;
+- dtype;
+- reduction operation.
+
+At minimum support:
+
+```text
+SUM
+MEAN
+```
+
+DDP gradient synchronization should normally use mean semantics so it can be compared to a reference global-batch gradient.
+
+### Important simulation constraint
+
+Ordinary CI executes rank simulations sequentially. A hook on rank 0 cannot synchronously block waiting for rank 1, because rank 1 backward has not executed yet.
+
+Therefore v0.10 should not model network collectives as blocking calls from inside gradient hooks.
+
+Use an educational two-phase structure:
+
+```text
+phase 1: local backward
+         ↓
+         hooks stage / mark local grads ready
+
+phase 2: explicit synchronization barrier
+         ↓
+         collective combines all replicas
+         ↓
+         synchronized grads written back
+```
+
+This keeps the dependency graph correct without inventing fake concurrency.
+
+---
+
+## 3.5 v0.10.3 — DistributedSampler
+
+Add a rank-aware sampler inspired by `torch.utils.data.DistributedSampler`.
+
+Possible API:
+
+```python
+DistributedSampler(
+    dataset,
+    num_replicas=world_size,
+    rank=rank,
+    shuffle=True,
+    seed=0,
+    drop_last=False,
+)
+
+sampler.set_epoch(epoch)
+```
+
+Core rule:
+
+```text
+same seed + same epoch
+→ all ranks derive the same global permutation
+→ each rank selects a deterministic strided partition
+```
+
+For example:
+
+```text
+global permutation:
+[7, 2, 5, 1, 6, 0, 3, 4]
+
+rank 0 / world_size 2:
+[7, 5, 6, 3]
+
+rank 1 / world_size 2:
+[2, 1, 0, 4]
+```
+
+Need explicit behavior when dataset size is not divisible by world size:
+
+```text
+drop_last=True
+→ truncate globally to evenly divisible size
+
+drop_last=False
+→ deterministically pad/repeat indices to equal replica lengths
+```
+
+Why equal replica lengths matter:
+
+```text
+same number of local training iterations
+→ same number/order of collectives
+```
+
+`set_epoch(epoch)` must change shuffle deterministically while keeping all ranks aligned.
+
+Tests:
+
+- partitions cover expected global indices;
+- ranks do not overlap when divisible and no padding is required;
+- deterministic padding behavior;
+- `drop_last` behavior;
+- same seed+epoch reproducibility;
+- different epoch changes permutation;
+- invalid rank/world-size errors.
+
+---
+
+## 3.6 v0.10.4 — DDP wrapper boundary
+
+Introduce an educational wrapper, e.g.:
+
+```python
+DistributedDataParallel(
+    module,
+    process_group=...,
+    bucket_cap=...,
+)
+```
+
+The wrapper should preserve normal Module usage:
+
+```python
+output = ddp(input)
+```
+
+and delegate forward directly to the wrapped module.
+
+DDP should not implement different forward math. Its main responsibility is gradient synchronization after backward.
+
+Possible structure:
+
+```text
+DistributedDataParallel
+├── module
+├── process_group / context
+└── Reducer
+```
+
+Parameters stay normal Parameter objects. Optimizers may continue to receive:
+
+```python
+optimizer = SGD(ddp.parameters(), ...)
+```
+
+or the underlying module parameters, as long as the behavior is documented and tested.
+
+---
+
+## 3.7 v0.10.5 — Gradient-ready hooks and Reducer
+
+v0.8 already added Tensor hooks. v0.10 should reuse them instead of changing Autograd formulas.
+
+For each trainable parameter:
+
+```text
+backward computes local parameter grad
+       ↓
+parameter hook fires
+       ↓
+Reducer marks parameter ready
+       ↓
+local grad copied/staged for bucket
+```
+
+The hook should **not** perform a blocking all-reduce in the single-process simulation.
+
+Reducer responsibilities:
+
+- register/remove parameter hooks;
+- map Parameter → bucket location;
+- record ready state;
+- reject duplicate-ready events in one iteration when inappropriate;
+- expose whether all expected local grads are ready;
+- reset iteration state after synchronization.
+
+Important invariant:
+
+```text
+Reducer observes Autograd
+but does not become AutogradEngine
+```
+
+Tests:
+
+- hooks fire when parameters receive grad;
+- parameters with no gradient are handled according to documented policy;
+- duplicate/incorrect readiness errors are clear;
+- iteration reset works.
+
+---
+
+## 3.8 v0.10.6 — Gradient buckets
+
+Real DDP groups many gradients into buckets to reduce communication overhead.
+
+Educational v0.10 should model the mechanism even though in-process communication is cheap.
+
+Example:
+
+```text
+Parameter A grad shape (4, 8)
+Parameter B grad shape (4,)
+Parameter C grad shape (2, 4)
+          │
+          ▼
+flatten in deterministic parameter order
+          │
+          ▼
+Bucket 0 [ A | B ]
+Bucket 1 [ C ]
+```
+
+Required metadata per bucket:
+
+- parameter order;
+- flat offsets;
+- original shapes;
+- dtype;
+- total element count;
+- ready count/state.
+
+Synchronization:
+
+```text
+local bucket rank 0
+local bucket rank 1
+       ↓
+ProcessGroup all_reduce(mean)
+       ↓
+reduced flat bucket
+       ↓
+unflatten
+       ↓
+write synchronized arrays into Parameter.grad
+```
+
+Bucket construction should be deterministic across replicas with identical model structure.
+
+Do not add compression, fp16 communication or overlap optimization yet.
+
+---
+
+## 3.9 v0.10.7 — Synchronization barrier API
+
+Because ranks are simulated sequentially, expose a clear synchronization phase rather than hiding it.
+
+Possible educational API forms:
+
+```python
+synchronize_ddp([ddp_rank0, ddp_rank1])
 ```
 
 or:
 
-```text
-mid-epoch exact resume
+```python
+world.synchronize(reducers)
 ```
 
-For a first educational implementation, epoch-boundary or controlled step-based deterministic datasets may be preferable. If mid-epoch resume is claimed, sampler/iterator state must genuinely be captured and tested.
+The API should:
+
+1. verify all ranks are represented exactly once;
+2. verify reducers have compatible bucket layout;
+3. verify local gradients are ready;
+4. reduce matching buckets across ranks;
+5. divide by world size for mean semantics;
+6. write grads back to each replica;
+7. reset synchronization state for the next iteration.
+
+This explicit barrier corresponds conceptually to the synchronization that a real asynchronous ProcessGroup would coordinate during backward.
 
 ---
 
-# 3.5 v0.9.3 — Unified Checkpoint State Schema
+## 3.10 v0.10.8 — Replica equivalence integration test
 
-Create one explicit logical checkpoint representation.
+This is the central v0.10 proof.
 
-Conceptual payload:
+### Setup
+
+Create one reference model and `world_size=2` replica models with identical initial state.
+
+Global batch:
 
 ```text
-CheckpointState
-├── schema_version
-├── framework_version
-├── model_state
-├── optimizer_state
-├── scheduler_state
-├── rng_state
-├── training_state
-└── metadata
+[x0, x1, x2, x3]
 ```
 
-## Why schema version matters
+Reference path:
 
-A checkpoint is a data contract.
+```text
+one model
+  ↓
+full batch of 4
+  ↓
+mean loss
+  ↓
+backward
+  ↓
+global-batch gradient
+  ↓
+optimizer.step
+```
 
-Future releases may change optimizer/runtime representation. Therefore serialized data should contain a small schema version rather than assuming every future reader understands every historical layout.
+Distributed simulation:
 
-## Requirements
+```text
+rank 0 sees first local batch
+rank 1 sees second local batch
+          ↓
+local backward independently
+          ↓
+DDP synchronize(mean)
+          ↓
+each rank receives average local gradient
+          ↓
+optimizer.step independently
+```
 
-- model state is collected through Module state APIs;
-- optimizer state is collected through optimizer state APIs;
-- scheduler state is collected through scheduler state APIs;
-- runtime progress is explicit;
-- RNG state is explicit;
-- schema/framework metadata are explicit;
-- load validates required sections;
-- unexpected/missing/incompatible state fails clearly when strict mode requires it.
+With equally sized local batches and mean loss, the synchronized gradient should match the reference global-batch gradient.
 
-Avoid storing live Python object references inside checkpoint state.
+Assertions:
+
+```text
+rank0 synchronized grad == reference grad
+rank1 synchronized grad == reference grad
+
+rank0 params after step == reference params
+rank1 params after step == reference params
+rank0 params == rank1 params
+```
+
+Run multiple steps, not just one, to prove replicas remain locked together.
+
+Add a DistributedSampler variant of the experiment to show data partitioning and synchronization compose correctly.
 
 ---
 
-# 3.6 v0.9.4 — Inspectable Serialization Format
+## 3.11 v0.10.9 — Collective and DDP failure semantics
 
-## Goal
+Tests should explicitly cover errors such as:
 
-The educational objective is to understand what is saved, not hide it inside one opaque blob.
+- invalid rank/world size;
+- duplicate rank registration;
+- missing rank contribution;
+- mismatched tensor shapes;
+- mismatched dtype;
+- incompatible bucket count/order/layout;
+- synchronization before local backward is ready;
+- synchronization twice without a new backward iteration;
+- replica model parameter layout mismatch;
+- invalid reduction operation.
 
-Prefer an inspectable design such as:
-
-```text
-checkpoint/
-├── metadata.json
-└── tensors.npz
-```
-
-or a single documented NPZ container plus structured JSON metadata.
-
-Suggested separation:
-
-```text
-NumPy arrays
-→ NPZ
-
-scalar/list/dict metadata
-→ JSON-compatible structure
-```
-
-Avoid `pickle` as the primary mechanism unless a clear reason is documented.
-
-## Requirements
-
-- save;
-- load;
-- schema version validation;
-- dtype/shape preservation;
-- deterministic key mapping;
-- readable metadata;
-- clear malformed-file errors;
-- no silent state omission.
-
-### File-write safety
-
-Where reasonable, demonstrate a small atomic-ish pattern:
-
-```text
-write temporary file
-      ↓
-fsync/close boundary where practical
-      ↓
-rename/replace target
-```
-
-Do not overbuild a production storage system; explain the failure mode being avoided.
+Do not silently skip a rank or parameter to make synchronization complete.
 
 ---
 
-# 3.7 v0.9.5 — Restore Semantics
-
-Loading bytes is not equivalent to restoring training.
-
-Implement one high-level restore path that applies state in a deliberate order.
-
-Conceptually:
+## 3.12 Suggested source layout
 
 ```text
-load checkpoint data
-      ↓
-validate schema
-      ↓
-restore model
-      ↓
-restore optimizer
-      ↓
-restore scheduler
-      ↓
-restore RNG
-      ↓
-restore progress
-```
-
-The exact ordering should be documented and tests should prove the chosen semantics.
-
-## Device rule
-
-Checkpoint tensors should have an explicit device policy.
-
-For v0.9 a simple educational rule is acceptable, for example:
-
-```text
-serialized arrays are device-neutral NumPy values
-load restores into the already-configured target Module/Parameter devices
-```
-
-or an explicit `map_location`-style concept if useful.
-
-Do not accidentally convert EDU parameters to CPU merely because NPZ stores host arrays.
-
----
-
-# 3.8 v0.9.6 — Deterministic Resume Experiment
-
-This is the central integration test of the version.
-
-Run A — uninterrupted:
-
-```text
-initialize with seed S
-      ↓
-train steps 1 ... N
-      ↓
-record losses / params / optimizer / scheduler state
-```
-
-Run B — interrupted:
-
-```text
-initialize with same seed S
-      ↓
-train steps 1 ... K
-      ↓
-save checkpoint
-      ↓
-construct fresh objects
-      ↓
-load checkpoint
-      ↓
-train K+1 ... N
-```
-
-Then assert equivalence at the appropriate precision:
-
-```text
-loss trajectory after resume
-model parameters
-optimizer moments/momentum
-scheduler LR
-training counters
-RNG continuation
-```
-
-The test should fail if any important state category is intentionally removed, making the lesson concrete.
-
-Prefer a tiny deterministic MLP/dataset so CI remains fast.
-
----
-
-# 3.9 v0.9.7 — Failure / Compatibility Semantics
-
-Checkpoint systems are valuable partly because they reject invalid state clearly.
-
-Tests should include:
-
-- missing model key;
-- wrong parameter shape;
-- incompatible optimizer parameter-group structure;
-- missing scheduler state when expected;
-- unknown schema version;
-- corrupted/missing metadata;
-- malformed NPZ archive;
-- device restoration policy;
-- strict vs explicitly non-strict behavior where supported.
-
-Never silently reshape parameters to make a checkpoint load.
-
----
-
-# 3.10 Suggested source layout
-
-Possible new package:
-
-```text
-mini_pytorch/runtime/
+mini_pytorch/distributed/
 ├── __init__.py
-├── rng.py
-├── state.py
-└── checkpoint.py
+├── context.py
+├── process_group.py
+├── sampler.py
+├── reducer.py
+└── ddp.py
+
+tests/test_distributed.py
+docs/DISTRIBUTED_DDP.md
+examples/13_ddp_simulation.py
 ```
 
-Responsibilities:
+Keep responsibilities narrow:
 
 ```text
-rng.py
-→ framework RNG state / seed utilities
+context.py
+→ rank/world_size values
 
-state.py
-→ TrainingState / logical CheckpointState
+process_group.py
+→ collective semantics/coordinator
 
-checkpoint.py
-→ serialization / deserialization / restore orchestration
+sampler.py
+→ dataset partitioning
+
+reducer.py
+→ grad readiness/bucket layout/writeback
+
+ddp.py
+→ Module-facing wrapper + synchronization integration
 ```
-
-Keep persistence code out of:
-
-```text
-Tensor
-AutogradEngine
-backend kernels
-Dispatcher
-```
-
-Existing Module/Optimizer/Scheduler state APIs should be reused and extended only when a genuine missing primitive is discovered.
 
 ---
 
-# 3.11 v0.9 tests
+## 3.13 v0.10 educational example
 
 Add:
 
 ```text
-tests/test_runtime_checkpoint.py
+examples/13_ddp_simulation.py
 ```
 
-Minimum coverage:
+It should demonstrate:
 
-### RNG
+```text
+build reference model
+      ↓
+clone two replica states
+      ↓
+construct DistributedSampler / contexts
+      ↓
+local backward on each rank
+      ↓
+print local gradients
+      ↓
+DDP synchronize
+      ↓
+print averaged gradients
+      ↓
+optimizer.step
+      ↓
+prove replicas and reference match
+```
 
-- same seed gives same sequence;
-- save/restore RNG state continues identical sequence;
-- checkpoint round-trip preserves RNG continuation.
-
-### TrainingState
-
-- defaults/validation;
-- epoch/global-step round-trip;
-- invalid counters rejected.
-
-### Serialization
-
-- state round-trip;
-- array dtype/shape preservation;
-- metadata readable;
-- malformed checkpoint errors;
-- unknown schema error.
-
-### Framework restore
-
-- Module state restoration;
-- optimizer state restoration;
-- scheduler state restoration;
-- target device preserved.
-
-### Integration
-
-- uninterrupted training vs interrupted+resume equivalence;
-- LR sequence identical after resume;
-- optimizer state identical;
-- future random draws identical.
-
-Full historical suite must remain green.
+Use Loguru for the walkthrough, keep data tiny, and require no multiprocessing/GPU/network.
 
 ---
 
-# 3.12 v0.9 educational example
+## 3.14 v0.10 documentation
 
 Add:
 
 ```text
-examples/12_checkpoint_resume.py
-```
-
-It should show:
-
-```text
-seed
- ↓
-train a few steps
- ↓
-save checkpoint
- ↓
-print/inspect checkpoint contents
- ↓
-create fresh model/optimizer/scheduler
- ↓
-load
- ↓
-resume
- ↓
-compare with uninterrupted reference
-```
-
-Keep the example small enough to run quickly without downloading MNIST.
-
----
-
-# 3.13 v0.9 documentation
-
-Add:
-
-```text
-docs/TRAINING_RUNTIME.md
+docs/DISTRIBUTED_DDP.md
 ```
 
 It should explain:
 
-- parameter state vs optimizer state;
-- scheduler state;
-- RNG seed vs RNG state;
-- training progress state;
-- checkpoint schema;
-- serialization vs restoration;
-- resume boundary;
-- deterministic-resume experiment;
-- why model weights alone are insufficient.
+- process vs rank vs world_size;
+- data parallel vs model parallel distinction;
+- why DistributedSampler exists;
+- local gradient vs synchronized gradient;
+- all-reduce sum vs mean;
+- ProcessGroup as communication abstraction;
+- why DDP uses Autograd hooks;
+- why gradients are bucketed;
+- why identical initial model state is required;
+- why collective ordering must match across ranks;
+- why the educational simulation uses an explicit barrier instead of blocking hook calls;
+- mapping from the simulation to real PyTorch DDP/NCCL architecture.
 
-Version branch must also update:
+Version branch must update:
 
 ```text
 README.md
@@ -781,85 +929,64 @@ Agents.md
 
 ---
 
-# 3.14 Definition of Done for v0.9
+## 3.15 Definition of Done for v0.10
 
-Before freeze, the version must demonstrate:
+Before freeze, tests must demonstrate:
 
-- explicit framework RNG state capture/restore;
-- explicit TrainingState;
-- schema-versioned logical checkpoint state;
-- inspectable serialization format;
-- model/optimizer/scheduler/RNG/progress round-trip;
-- clear strict validation failures;
-- documented device restoration policy;
-- deterministic uninterrupted-vs-resumed training equivalence;
-- no persistence logic embedded into Tensor math/Autograd Engine;
-- educational docs/example complete;
-- all v0.8 and earlier regression tests green;
-- exact final `v0.9` branch-head GitHub Actions green;
-- frozen tree integrated into `main`.
+- explicit rank/world-size validation;
+- deterministic DistributedSampler partitioning;
+- epoch-dependent shared shuffle;
+- ProcessGroup abstraction exists independently from DDP;
+- simulated SUM/MEAN collective correctness;
+- clear collective mismatch failures;
+- DDP wrapper delegates normal forward;
+- Tensor hooks mark local parameter gradients ready;
+- deterministic bucket construction;
+- flatten/reduce/unflatten correctness;
+- synchronized grads written back before optimizer step;
+- all replicas remain parameter-identical across multiple steps;
+- synchronized DDP result matches a single-model global-batch reference;
+- v0.9 deterministic checkpoint-resume regression still passes;
+- all earlier regression tests remain green;
+- architecture docs/example exist;
+- exact final v0.10 branch-head GitHub Actions passes;
+- frozen tree is integrated into `main`.
 
-## Explicit non-goals for v0.9
+### Explicit non-goals for v0.10
 
 Do not add yet:
 
+- multiprocessing launchers;
+- TCP/Gloo/NCCL transport;
+- GPU communication;
+- asynchronous communication overlap;
+- gradient compression;
+- fp16/bf16 communication hooks;
+- FSDP / ZeRO / sharded parameters;
 - distributed checkpointing;
-- sharded optimizer state;
-- remote/object-store checkpoint service;
-- async checkpoint writer;
-- full DataLoader worker-state restoration;
-- NCCL/DDP;
-- compiler graph serialization;
-- production security/cryptographic signing.
+- RPC;
+- distributed Autograd across arbitrary graphs.
+
+The goal is architectural understanding of DDP's synchronization path.
 
 ---
 
 # 4. Future milestones
 
-## v0.10 — Distributed / DDP Concepts
+## v0.11 — Graph IR and Eager-to-Graph Capture
 
 Core question:
 
-> If every process has a model replica, when and how are gradients synchronized so replicas remain equivalent?
+> How can eager operator execution be represented explicitly as a graph of values and nodes without changing numerical results?
 
 Planned concepts:
-
-- DistributedSampler;
-- ProcessGroup abstraction;
-- simulated/CPU AllReduce;
-- DDP wrapper;
-- Autograd gradient-ready hooks;
-- bucket construction;
-- synchronization ordering;
-- world size / rank semantics.
-
-Architecture target:
-
-```text
-Autograd Engine
-      ↓
-gradient-ready hook
-      ↓
-DDP reducer
-      ↓
-grad buckets
-      ↓
-ProcessGroup.all_reduce
-      ↓
-replica-consistent grads
-```
-
-Goal: architecture, not reimplementing NCCL.
-
-## v0.11 — Graph IR and Eager-to-Graph Capture
-
-Core concepts:
 
 - Node / Value / Graph;
 - supported-op tracing;
 - graph interpreter;
 - explicit graph breaks;
-- eager-vs-graph equivalence.
+- eager-vs-graph equivalence;
+- graph visualization.
 
 ## v0.12 — Dynamo-like Guards and Graph Cache
 
@@ -877,9 +1004,9 @@ Core concepts:
 
 - captured forward graph;
 - captured backward graph;
-- saved intermediates contract;
+- saved-intermediate contract;
 - eager vs captured gradient equivalence;
-- preparation for true differentiable/lowered backward graphs.
+- foundations for differentiable/lowered backward graphs.
 
 ## v0.14 — Inductor-like Lowering and Kernel Fusion
 
@@ -893,91 +1020,36 @@ Core concepts:
 
 ## v0.15 — Runtime / Performance Mechanics
 
-Potential concepts after the compiler path is understandable:
+Potential concepts after compiler architecture is understandable:
 
 - allocator/caching concepts;
 - scheduling;
 - prefetching;
-- streams/events as architecture;
-- kernel launch/runtime overhead;
-- profiling.
+- kernel launch/fusion accounting;
+- profiling hooks.
 
 ## v1.0 — Integrated Architecture
 
-The goal is not feature parity with PyTorch. v1.0 should be reached when the repository can coherently explain and demonstrate the main dependency chain:
+Target educational map:
 
 ```text
 Tensor / Storage
       ↓
-Autograd
-      ↓
-Module / Optimizer
-      ↓
-Data pipeline
-      ↓
 Dispatcher / Backend
       ↓
-NN operators
+AutogradEngine
       ↓
-Autograd Engine
+Module / Optimizer / Data
       ↓
-Training runtime
+Training Runtime
       ↓
-Distributed concepts
+Distributed Reducer
       ↓
-Graph capture
+Graph Capture / Guards
       ↓
 AOT backward
       ↓
-Lowering / fusion
+Lowering / Fusion
 ```
 
----
-
-# 5. Version-development protocol
-
-For every future version:
-
-```text
-read main/Agents.md + Plan.md
-        ↓
-create version branch from latest main
-        ↓
-write branch version.md + Agents.md first
-        ↓
-implement smallest readable reference mechanism
-        ↓
-add invariant + error + numerical/integration tests
-        ↓
-add educational example + architecture docs
-        ↓
-run full regression
-        ↓
-exact final branch-head CI green
-        ↓
-freeze branch
-        ↓
-integrate validated state into main
-        ↓
-restore canonical main docs
-        ↓
-advance this Plan.md
-```
-
----
-
-# 6. Current directive
-
-`v0.8` is complete and frozen. `main` contains the validated **Advanced Autograd Engine** milestone with a **123-test** regression baseline.
-
-The next branch should be **`v0.9`**, created from current `main`, and should focus on **Training Runtime / Serialization / Reproducibility**.
-
-The central experiment of v0.9 must be:
-
-```text
-uninterrupted training
-       ==
-checkpoint → fresh process-like objects → restore → resume
-```
-
-for model parameters, optimizer dynamics, scheduler state, RNG continuation and training progress—not merely similar final loss.
+The project reaches v1.0 when these layers compose cleanly while historical version branches remain readable snapshots of how the architecture grew.
