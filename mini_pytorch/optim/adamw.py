@@ -46,3 +46,4 @@ class AdamW(Optimizer):
                 v += (1.0 - beta2) * grad * grad
                 step_size = lr * math.sqrt(1.0 - beta2**t) / (1.0 - beta1**t)
                 p.data -= step_size * m / (np.sqrt(v) + eps)
+                p._mark_dirty()
