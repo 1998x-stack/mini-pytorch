@@ -1,4 +1,4 @@
-"""Builtin operator schemas and registrations for mini-pytorch v0.6."""
+"""Builtin operator schemas and backend registrations for mini-pytorch v0.7."""
 from __future__ import annotations
 
 import numpy as np
@@ -15,35 +15,37 @@ _REGISTERED = False
 
 
 def _tensor_result(array, *inputs: Tensor) -> Tensor:
-    out = np.asarray(array)
     return Tensor._from_operation_result(
-        out,
+        np.asarray(array),
         inputs=tuple(inputs),
         requires_grad=False,
     )
 
 
-def _cpu_add(a: Tensor, b: Tensor) -> Tensor:
+# CPU and EDU intentionally share these NumPy numerical implementations in
+# v0.7. They are registered under distinct DispatchKeys, so routing remains
+# backend-specific while the educational second backend stays hardware-free.
+def _backend_add(a: Tensor, b: Tensor) -> Tensor:
     return _tensor_result(kernels.add(a.data, b.data), a, b)
 
 
-def _cpu_mul(a: Tensor, b: Tensor) -> Tensor:
+def _backend_mul(a: Tensor, b: Tensor) -> Tensor:
     return _tensor_result(kernels.mul(a.data, b.data), a, b)
 
 
-def _cpu_matmul(a: Tensor, b: Tensor) -> Tensor:
+def _backend_matmul(a: Tensor, b: Tensor) -> Tensor:
     return _tensor_result(kernels.matmul(a.data, b.data), a, b)
 
 
-def _cpu_relu(a: Tensor) -> Tensor:
+def _backend_relu(a: Tensor) -> Tensor:
     return _tensor_result(kernels.relu(a.data), a)
 
 
-def _cpu_sum(a: Tensor, *, axis=None, keepdims: bool = False) -> Tensor:
+def _backend_sum(a: Tensor, *, axis=None, keepdims: bool = False) -> Tensor:
     return _tensor_result(kernels.sum(a.data, axis=axis, keepdims=keepdims), a)
 
 
-def _cpu_conv2d(
+def _backend_conv2d(
     input: Tensor,
     weight: Tensor,
     bias: Tensor,
@@ -79,13 +81,7 @@ def _cpu_conv2d(
     return _tensor_result(array, input, weight, bias)
 
 
-def _cpu_max_pool2d(
-    input: Tensor,
-    *,
-    kernel_size,
-    stride=None,
-    padding=0,
-) -> Tensor:
+def _backend_max_pool2d(input: Tensor, *, kernel_size, stride=None, padding=0) -> Tensor:
     return _tensor_result(
         kernels.max_pool2d(
             input.data,
@@ -97,13 +93,8 @@ def _cpu_max_pool2d(
     )
 
 
-def _attach_autograd(
-    operator: str,
-    function_cls,
-    *inputs: Tensor,
-    **kwargs,
-) -> Tensor:
-    """Autograd wrapper that redispatches to the backend, then attaches GradFn."""
+def _attach_autograd(operator: str, function_cls, *inputs: Tensor, **kwargs) -> Tensor:
+    """Autograd policy wrapper that preserves the concrete backend on redispatch."""
 
     ctx = Context()
     raw_inputs = tuple(t.data for t in inputs)
@@ -138,13 +129,7 @@ def _autograd_relu(a: Tensor) -> Tensor:
 
 
 def _autograd_sum(a: Tensor, *, axis=None, keepdims: bool = False) -> Tensor:
-    return _attach_autograd(
-        "aten::sum.default",
-        Sum,
-        a,
-        axis=axis,
-        keepdims=keepdims,
-    )
+    return _attach_autograd("aten::sum.default", Sum, a, axis=axis, keepdims=keepdims)
 
 
 def _autograd_conv2d(
@@ -172,13 +157,7 @@ def _autograd_conv2d(
     )
 
 
-def _autograd_max_pool2d(
-    input: Tensor,
-    *,
-    kernel_size,
-    stride=None,
-    padding=0,
-) -> Tensor:
+def _autograd_max_pool2d(input: Tensor, *, kernel_size, stride=None, padding=0) -> Tensor:
     return _attach_autograd(
         "aten::max_pool2d.default",
         MaxPool2dOp,
@@ -189,14 +168,7 @@ def _autograd_max_pool2d(
     )
 
 
-def _no_grad_fallback(
-    operator: str,
-    keyset: DispatchKeySet,
-    *args,
-    **kwargs,
-):
-    """Strip NoGrad and redispatch to the backend numerical kernel."""
-
+def _no_grad_fallback(operator: str, keyset: DispatchKeySet, *args, **kwargs):
     return dispatcher.redispatch(
         operator,
         keyset.without(DispatchKey.NOGRAD),
@@ -205,35 +177,30 @@ def _no_grad_fallback(
     )
 
 
+def _register_backend_pair(operator: str, kernel) -> None:
+    dispatcher.register(operator, DispatchKey.CPU, kernel)
+    dispatcher.register(operator, DispatchKey.EDU, kernel)
+
+
 def register_builtin_operators() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
 
     lib = Library("aten", dispatcher)
-
     schemas = {
         "aten::add.Tensor": lib.define(
-            "add",
-            overload="Tensor",
-            signature="(Tensor self, Tensor other) -> Tensor",
+            "add", overload="Tensor", signature="(Tensor self, Tensor other) -> Tensor"
         ),
         "aten::mul.Tensor": lib.define(
-            "mul",
-            overload="Tensor",
-            signature="(Tensor self, Tensor other) -> Tensor",
+            "mul", overload="Tensor", signature="(Tensor self, Tensor other) -> Tensor"
         ),
         "aten::matmul.default": lib.define(
-            "matmul",
-            signature="(Tensor self, Tensor other) -> Tensor",
+            "matmul", signature="(Tensor self, Tensor other) -> Tensor"
         ),
-        "aten::relu.default": lib.define(
-            "relu",
-            signature="(Tensor self) -> Tensor",
-        ),
+        "aten::relu.default": lib.define("relu", signature="(Tensor self) -> Tensor"),
         "aten::sum.default": lib.define(
-            "sum",
-            signature="(Tensor self, axis=None, keepdims=False) -> Tensor",
+            "sum", signature="(Tensor self, axis=None, keepdims=False) -> Tensor"
         ),
         "aten::conv2d.default": lib.define(
             "conv2d",
@@ -249,26 +216,17 @@ def register_builtin_operators() -> None:
     }
     assert all(key == value for key, value in schemas.items())
 
-    dispatcher.register("aten::add.Tensor", DispatchKey.CPU, _cpu_add)
-    dispatcher.register("aten::add.Tensor", DispatchKey.AUTOGRAD, _autograd_add)
-
-    dispatcher.register("aten::mul.Tensor", DispatchKey.CPU, _cpu_mul)
-    dispatcher.register("aten::mul.Tensor", DispatchKey.AUTOGRAD, _autograd_mul)
-
-    dispatcher.register("aten::matmul.default", DispatchKey.CPU, _cpu_matmul)
-    dispatcher.register("aten::matmul.default", DispatchKey.AUTOGRAD, _autograd_matmul)
-
-    dispatcher.register("aten::relu.default", DispatchKey.CPU, _cpu_relu)
-    dispatcher.register("aten::relu.default", DispatchKey.AUTOGRAD, _autograd_relu)
-
-    dispatcher.register("aten::sum.default", DispatchKey.CPU, _cpu_sum)
-    dispatcher.register("aten::sum.default", DispatchKey.AUTOGRAD, _autograd_sum)
-
-    dispatcher.register("aten::conv2d.default", DispatchKey.CPU, _cpu_conv2d)
-    dispatcher.register("aten::conv2d.default", DispatchKey.AUTOGRAD, _autograd_conv2d)
-
-    dispatcher.register("aten::max_pool2d.default", DispatchKey.CPU, _cpu_max_pool2d)
-    dispatcher.register("aten::max_pool2d.default", DispatchKey.AUTOGRAD, _autograd_max_pool2d)
+    for operator, backend_kernel, autograd_kernel in (
+        ("aten::add.Tensor", _backend_add, _autograd_add),
+        ("aten::mul.Tensor", _backend_mul, _autograd_mul),
+        ("aten::matmul.default", _backend_matmul, _autograd_matmul),
+        ("aten::relu.default", _backend_relu, _autograd_relu),
+        ("aten::sum.default", _backend_sum, _autograd_sum),
+        ("aten::conv2d.default", _backend_conv2d, _autograd_conv2d),
+        ("aten::max_pool2d.default", _backend_max_pool2d, _autograd_max_pool2d),
+    ):
+        _register_backend_pair(operator, backend_kernel)
+        dispatcher.register(operator, DispatchKey.AUTOGRAD, autograd_kernel)
 
     dispatcher.register_fallback(DispatchKey.NOGRAD, _no_grad_fallback)
     _REGISTERED = True
