@@ -1,58 +1,78 @@
-# Agents.md — mini-pytorch v0.11 Development Contract
+# Agents.md — mini-pytorch v0.11 Frozen Branch Contract
 
-> Read this file before modifying branch `v0.11`.
+> Read this file before modifying frozen branch `v0.11`.
 
 ## Branch identity
 
 - Branch: `v0.11`
 - Previous version: `v0.10`
 - Primary mental model: **Graph IR / Eager-to-Graph Capture**
-- Status: active development
-- Target package version: `0.11.0`
+- Status: **frozen historical learning snapshot**
+- Package version: `0.11.0`
+- Validated baseline: **176/176 tests passed**
 
-## 1. Scope
-
-Build one compiler-facing layer only:
+## 1. Frozen architecture
 
 ```text
-logical eager operator
+Python Tensor API
       ↓
-Dispatcher
-      ├── normal execution
+Dispatcher.dispatch
+      ├── ordinary eager execution
       └── capture observer
               ↓
        Value / Node / Graph
               ↓
        GraphInterpreter
               ↓
-          Dispatcher replay
+          Dispatcher
+              ↓
+Autograd / NoGrad / CPU / EDU
 ```
 
-Capture must reuse the existing logical operator boundary. Do not create duplicate numerical kernels or duplicate Autograd formulas.
+The Graph records logical operator semantics. It is not a second numerical runtime.
 
-## 2. Mandatory architecture rules
+## 2. Historical branch rule
 
-- Dispatcher remains the owner of operator routing.
-- Capture observes only outer `dispatch()` calls; internal `redispatch()` must not create duplicate nodes.
-- Graph replay must call Dispatcher again.
-- IR must be deterministic and inspectable.
-- Graph inputs, Tensor constants and Python literals must be distinguishable.
-- Unsupported dataflow must raise an explicit GraphBreak rather than silently baking dynamic values as constants.
-- Eager behavior outside capture must remain unchanged.
-- Capturing must not disable Autograd; the trace run is a normal eager run plus observation.
-- Replay outputs must be ordinary Tensors and must support ordinary backward.
+Allowed only:
 
-## 3. IR boundary
+- documentation corrections;
+- tests clarifying promised v0.11 behavior;
+- narrowly scoped correctness fixes inside Graph IR/capture/interpreter semantics.
 
-Required core objects:
+Forbidden:
+
+- v0.12 guards/cache/recompile;
+- AOTAutograd;
+- fusion/lowering/codegen;
+- unrelated distributed/backend/NN expansion;
+- backporting later compiler milestones.
+
+## 3. Frozen capture invariant
+
+- capture observes only outer `Dispatcher.dispatch()` calls;
+- internal `redispatch()` calls are not nodes;
+- one logical eager op maps to one Node;
+- capture executes normal eager math and records after execution;
+- graph inputs are explicit positional Tensor inputs;
+- pre-existing leaf Tensor constants may be captured by value;
+- unsupported dynamic non-leaf dataflow raises `GraphBreakError`;
+- nested active capture is rejected.
+
+Do not weaken GraphBreak into silent constant freezing.
+
+## 4. Frozen IR invariant
+
+Core types:
 
 ```text
 Value
+ValueRef
+TensorConstant
 Node
 Graph
 ```
 
-Value kinds should cover at least:
+Value kinds:
 
 ```text
 input
@@ -60,93 +80,148 @@ constant
 intermediate
 ```
 
-Node records logical operator name, structured positional/keyword arguments and structured outputs.
+Graph Value/Node ids must remain deterministic within capture order.
 
-Do not encode Python object identity as the persistent graph format.
+Runtime Python object identity may be used only transiently while mapping eager Tensors to IR Values; persistent graph references use Value ids.
 
-## 4. Capture boundary
+## 5. Frozen interpreter invariant
 
-Provide a context/API that:
+`GraphInterpreter` must:
 
-1. registers explicit example Tensor inputs as Graph inputs;
-2. executes the Python function eagerly;
-3. observes supported Dispatcher calls;
-4. records produced Tensors as intermediate Values;
-5. marks returned Tensor values as Graph outputs;
-6. returns both the Graph and eager output for validation/use.
-
-Nested active capture is rejected in v0.11.
-
-## 5. GraphBreak rule
-
-A Tensor flowing into a captured logical operator must be one of:
-
-- a registered graph input;
-- a captured intermediate;
-- an explicitly materialized Tensor constant allowed by the capture boundary.
-
-If an untracked Tensor was dynamically produced during the capture by an unsupported eager operation, do not silently freeze it as a constant. Raise `GraphBreakError` with the operator/dataflow context.
-
-v0.11 may conservatively restrict constants instead of pretending to support arbitrary Python/Module capture.
-
-## 6. Interpreter rule
-
-GraphInterpreter executes nodes in order and resolves IR Values to runtime objects.
-
-It must:
-
-- bind runtime graph inputs;
-- materialize graph constants;
-- recursively resolve structured argument specs;
-- call the normal Dispatcher;
-- bind node outputs;
-- return Graph outputs in their recorded structure.
+```text
+bind runtime inputs
+      ↓
+materialize graph constants
+      ↓
+resolve structured args/kwargs
+      ↓
+Dispatcher.dispatch(node.operator, ...)
+      ↓
+bind outputs
+      ↓
+return graph outputs
+```
 
 It must not call backend kernels directly.
 
-## 7. Correctness contract
+Replay must therefore preserve runtime Autograd/NoGrad/backend dispatch policy.
 
-At minimum tests must cover:
+## 6. Dispatch-policy invariant
 
-- deterministic IR IDs/text;
-- graph input/constants/intermediates;
-- add/mul/matmul/relu/sum capture;
-- kwargs/literal argument capture;
-- replay forward equality;
-- replay backward/input-gradient equality;
-- CPU and EDU replay;
-- nested capture rejection;
-- wrong input count;
-- GraphBreak from unsupported eager dataflow;
-- replay through Dispatcher, not direct kernels;
-- all historical 159 tests remain green.
+The Graph stores logical operators, not trace-time DispatchKeys.
 
-## 8. Explicit non-goals
+A trace under NoGrad may replay under Autograd if runtime state requires it.
 
-Do not implement in v0.11:
-
-- guards/cache (`v0.12`);
-- Python bytecode/frame tracing;
-- symbolic control flow;
-- full Module/Parameter lifting;
-- AOTAutograd (`v0.13`);
-- optimization/fusion/lowering (`v0.14`);
-- Triton/code generation;
-- performance claims.
-
-## 9. Freeze contract
-
-Before freezing:
+Do not persist:
 
 ```text
-implementation
-+ tests
-+ docs/GRAPH_IR.md
-+ examples/14_graph_capture.py
-+ README.md
-+ MANIFEST.txt
-+ version.md
-+ exact final branch-head CI
+selected CPU/EDU key
+selected Autograd/NoGrad key
+kernel function object
 ```
 
-After exact final-head CI is green, mark this branch frozen, integrate it to `main`, restore canonical main docs, and advance `Plan.md` to v0.12 Guards / Graph Cache.
+as the semantic Node identity.
+
+## 7. Constant invariant
+
+Tensor constants are captured by value and materialized fresh during replay.
+
+Captured device is retained in v0.11. Mixed-device semantics continue to be enforced by the existing Dispatcher.
+
+Full Module/Parameter lifting, mutation analysis and device specialization are outside this frozen version.
+
+## 8. GraphBreak invariant
+
+An untracked Tensor with a GradFn indicates dynamic dataflow produced by an unsupported eager path.
+
+Examples include current direct `Function.apply` operations such as `exp()`/`log()` when their outputs cross into or become outputs of a captured graph.
+
+Such cases must raise `GraphBreakError` rather than be silently baked into constants.
+
+## 9. Correctness proof that must remain
+
+The full suite proves:
+
+```text
+eager forward == graph replay forward
+```
+
+and for supported differentiable graphs:
+
+```text
+eager input grads == replay input grads
+```
+
+Additional required regression coverage includes:
+
+- stable textual IR;
+- Tensor constant copy semantics;
+- kwargs capture;
+- matmul replay;
+- conv2d replay;
+- EDU replay;
+- trace NoGrad → replay Autograd;
+- replay uses Dispatcher;
+- wrong input count;
+- nested capture rejection;
+- GraphBreak semantics.
+
+## 10. Historical baseline
+
+Validated implementation suite:
+
+```text
+Ubuntu 24.04
+Python 3.11.17
+NumPy 2.4.6
+Ran 176 tests
+OK
+```
+
+Exact frozen branch-head CI must remain green.
+
+## 11. Documentation map
+
+```text
+README.md
+version.md
+mini_pytorch/compiler/ir.py
+mini_pytorch/compiler/capture.py
+mini_pytorch/compiler/interpreter.py
+mini_pytorch/dispatcher.py
+tests/test_graph_ir.py
+docs/GRAPH_IR.md
+examples/14_graph_capture.py
+```
+
+## 12. Explicit non-goals
+
+v0.11 does not claim:
+
+- Python frame/bytecode capture;
+- control-flow tracing;
+- shape guards;
+- graph cache;
+- automatic recompilation;
+- symbolic shapes;
+- AOTAutograd;
+- optimization/fusion;
+- lowering/codegen;
+- Inductor/Triton;
+- production compiler performance.
+
+## 13. Next-version boundary
+
+`v0.12` must be created from latest validated `main` and owns:
+
+```text
+runtime guards
+      ↓
+graph signature/cache key
+      ↓
+cache hit / miss
+      ↓
+re-capture / recompile accounting
+```
+
+Do not implement those concerns on this frozen branch.
