@@ -11,6 +11,7 @@ docs/AUTOGRAD_ENGINE.md
 docs/CNN_OPERATORS.md
 docs/DEVICE_BACKEND.md
 docs/DISPATCHER.md
+docs/DISTRIBUTED_DDP.md
 docs/EXTENDING.md
 docs/LEARNING_PATH.md
 docs/MNIST_TRAINING.md
@@ -30,6 +31,7 @@ examples/09_cnn_mnist.py
 examples/10_device_backend.py
 examples/11_autograd_engine.py
 examples/12_checkpoint_resume.py
+examples/13_ddp_simulation.py
 mini_pytorch/__init__.py
 mini_pytorch/autograd.py
 mini_pytorch/autograd_engine.py
@@ -50,6 +52,11 @@ mini_pytorch/data/dataloader.py
 mini_pytorch/data/dataset.py
 mini_pytorch/data/mnist.py
 mini_pytorch/data/sampler.py
+mini_pytorch/distributed/__init__.py
+mini_pytorch/distributed/ddp.py
+mini_pytorch/distributed/process_group.py
+mini_pytorch/distributed/reducer.py
+mini_pytorch/distributed/sampler.py
 mini_pytorch/nn/__init__.py
 mini_pytorch/nn/activation.py
 mini_pytorch/nn/batchnorm.py
@@ -80,6 +87,7 @@ tests/test_cnn_ops.py
 tests/test_data.py
 tests/test_device_backend.py
 tests/test_dispatcher.py
+tests/test_distributed.py
 tests/test_lr_scheduler.py
 tests/test_mnist.py
 tests/test_nn.py

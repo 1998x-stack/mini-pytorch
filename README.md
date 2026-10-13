@@ -1,318 +1,513 @@
-# mini-pytorch — Architecture-Driven PyTorch Learning Project
+# mini-pytorch v0.10 — Distributed / DDP Concepts
 
-> 用可运行的 Python/NumPy 代码，按真实 PyTorch 的架构依赖顺序，一层一层拆开核心机制。
+> 用一个确定性的单进程模拟器，把 PyTorch DDP 最核心的架构链真正跑通：**数据分片 → local backward → gradient-ready hooks → buckets → ProcessGroup all-reduce → replica-consistent gradients**。
 
-**Latest integrated version:** `v0.9.0`
+**Package version:** `0.10.0`
 
-**Current main milestone:** Training Runtime / Serialization / Reproducibility
+**Current validated baseline:** `159/159 tests passed`
 
-**Next milestone:** `v0.10` Distributed / DDP Concepts
+## 1. 本版本核心问题
 
-mini-pytorch 不追求复制完整 PyTorch API，而是持续回答：
-
-```text
-Tensor 是什么？
-      ↓
-Autograd 为什么能自动求导？
-      ↓
-Optimizer / Scheduler 如何保存训练动力学？
-      ↓
-Dataset / Sampler / DataLoader 为什么分层？
-      ↓
-Storage / stride / view / version counter 有什么意义？
-      ↓
-operator 为什么需要 Dispatcher / redispatch？
-      ↓
-复杂 NN operator 如何建立在 Dispatcher 上？
-      ↓
-Device / Backend 如何与 Tensor / Storage 分离？
-      ↓
-AutogradEngine 如何管理 graph lifetime / hooks / retained grad？
-      ↓
-完整训练状态如何 checkpoint 并确定性恢复？
-      ↓
-多个模型副本如何同步 gradient 并保持一致？
-```
-
-## 1. 版本学习地图
-
-| Version | 核心主题 | 最重要的问题 |
-|---|---|---|
-| `v0.1` | Tensor + Dynamic Autograd | `backward()` 如何自动求导？ |
-| `v0.2` | Optimizer + LR Scheduler | 优化状态为什么独立于模型？ |
-| `v0.3` | Dataset + Sampler + DataLoader + MNIST | 数据为什么拆成采样、批处理与加载？ |
-| `v0.4` | Storage + stride + views + version counter | Tensor 为什么不等于 ndarray？ |
-| `v0.5` | Operator Schema + Dispatcher + Redispatch | 一个 operator 为什么需要路由层？ |
-| `v0.6` | Conv2d / Pooling / Dropout / BatchNorm | 复杂 NN op 如何复用 Dispatcher？ |
-| `v0.7` | Device / Backend | 多 backend 为什么不能靠散落的 `if device`？ |
-| `v0.8` | Advanced Autograd Engine | graph lifetime / hooks / retain_graph 如何工作？ |
-| `v0.9` | Training Runtime / Checkpoint / RNG | 怎样暂停训练并确定性继续？ |
-| `v0.10` | Distributed / DDP Concepts | 多个 replica 如何同步 gradient？ |
-
-每个历史 version branch 都保留：
+两个完全相同的模型副本，如果各自看到不同数据：
 
 ```text
-README.md   → 本版本学习入口
-version.md  → 与上一版本的精确 delta
-Agents.md   → 本版本工程边界与冻结规则
+rank 0                     rank 1
+  │                          │
+batch A                    batch B
+  │                          │
+backward                   backward
+  │                          │
+grad_A                     grad_B
 ```
 
-`main` 始终代表最新完成并验证的框架状态。
-
-## 2. 当前完整架构
+直接执行 optimizer：
 
 ```text
-                           Tensor
-                shape / stride / dtype / device
-                             │
-                             ▼
-                           Storage
-              backend-owned allocation + version
-                             │
-                             ▼
-                       logical operator
-                             │
-                             ▼
-                         Dispatcher
-            policy keys + backend dispatch keys
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-           Autograd        NoGrad        CPU / EDU
-              │                              │
-              └──────── redispatch ──────────┘
-                             │
-                             ▼
-                      numerical kernel
-                             │
-                             ▼
-                       Tensor / GradFn
-                             │
-                             ▼
-                       AutogradEngine
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-        local grad flow  graph lifetime    hooks
-                             │
-                             ▼
-                   requested persistent grad
-
-Dataset → Sampler → BatchSampler → DataLoader
-
-Module / Parameter
-        ↓
-Optimizer
-        ↓
-LR Scheduler
-        │
-        ├───────────────┐
-        ▼               ▼
- TrainingState      framework RNG
-        │               │
-        └───────┬───────┘
-                ▼
-         CheckpointState
-                ▼
-     metadata.json + tensors.npz
-                ▼
-       validated restoration
+w0' = w - lr * grad_A
+w1' = w - lr * grad_B
 ```
 
-`EDU` 是确定性的教学模拟 backend：拥有独立 Device / Backend / DispatchKey，但仍以 NumPy host arrays 为数值载体。它用于验证架构边界，不代表 CUDA/GPU 加速。
+通常会导致：
 
-## 3. v0.9 最新能力
+```text
+w0' != w1'
+```
 
-### Framework RNG
+v0.10 构建的解决链路：
+
+```text
+local gradients
+      ↓
+Reducer buckets
+      ↓
+ProcessGroup all_reduce(mean)
+      ↓
+shared averaged gradients
+      ↓
+optimizer.step()
+      ↓
+replicas remain equal
+```
+
+## 2. 相比 v0.9 的变化
+
+v0.9 解决：
+
+```text
+一个训练进程如何 checkpoint / restore？
+```
+
+v0.10 解决：
+
+```text
+多个 replica 如何同步梯度？
+```
+
+完整结构：
+
+```text
+                     Dataset
+                        │
+                        ▼
+              DistributedSampler
+             ┌──────────┴──────────┐
+             ▼                     ▼
+          rank 0                  rank 1
+             │                     │
+             ▼                     ▼
+         Module 0               Module 1
+             │                     │
+             ▼                     ▼
+      AutogradEngine 0      AutogradEngine 1
+             │                     │
+             ▼                     ▼
+      Parameter hooks       Parameter hooks
+             │                     │
+             ▼                     ▼
+         Reducer 0              Reducer 1
+             │                     │
+             ▼                     ▼
+      GradientBucket(s)     GradientBucket(s)
+             │                     │
+             └──────────┬──────────┘
+                        ▼
+                  ProcessGroup
+                        │
+                     all_reduce
+                        │
+                        ▼
+               averaged gradients
+                        │
+             ┌──────────┴──────────┐
+             ▼                     ▼
+        optimizer 0            optimizer 1
+```
+
+## 3. 新增模块
+
+```text
+mini_pytorch/distributed/
+├── __init__.py
+├── process_group.py
+├── sampler.py
+├── reducer.py
+└── ddp.py
+```
+
+新增：
+
+```text
+tests/test_distributed.py
+docs/DISTRIBUTED_DDP.md
+examples/13_ddp_simulation.py
+```
+
+## 4. ProcessGroup
+
+创建一个两 rank 的模拟 world：
 
 ```python
-from mini_pytorch import manual_seed, get_rng_state, set_rng_state
+from mini_pytorch.distributed import create_process_group
+
+g0, g1 = create_process_group(2)
 ```
 
-v0.9 明确区分：
+每个 rank 拥有独立：
 
 ```text
-seed       → 随机流从哪里开始
-RNG state  → 随机流当前走到哪里
+rank
+world_size
+next collective sequence
 ```
 
-framework-owned RNG 已用于：
+但共享同一个 in-process collective world。
 
-```text
-Linear initialization
-Conv2d initialization
-Dropout(seed=None)
-RandomSampler(seed=None)
-```
-
-### TrainingState
+### Work handle
 
 ```python
-from mini_pytorch import TrainingState
+w0 = g0.all_reduce([1.0, 3.0], op="mean")
+```
 
-state = TrainingState(
-    epoch=2,
-    global_step=731,
-    batch_in_epoch=19,
+此时只有 rank 0 提交：
+
+```text
+w0.is_completed == False
+```
+
+不会阻塞等待 rank 1。
+
+当：
+
+```python
+w1 = g1.all_reduce([3.0, 5.0], op="mean")
+```
+
+两边都可以取得：
+
+```text
+[2.0, 4.0]
+```
+
+## 5. Collective order 是协议
+
+同一个 sequence 上，所有 rank 必须一致：
+
+```text
+operation
+shape
+dtype
+```
+
+例如：
+
+```text
+rank0 sequence 2: mean, shape=(128,), float64
+rank1 sequence 2: sum,  shape=(128,), float64
+```
+
+会明确失败。
+
+这说明 distributed collective 不是几个互不相关的本地函数调用，而是一个多参与者协议。
+
+## 6. DistributedSampler
+
+```python
+sampler = DistributedSampler(
+    dataset,
+    num_replicas=4,
+    rank=2,
+    shuffle=True,
+    seed=123,
 )
 ```
 
-它描述训练运行位置，不与模型 Tensor 状态混在一起。
-
-### CheckpointState
+职责只有：
 
 ```text
-CheckpointState
-├── schema_version
-├── framework_version
-├── model_state
-├── optimizer_state
-├── scheduler_state
-├── rng_state
-├── training_state
-└── metadata
+决定这个 rank 看哪些 index
 ```
 
-状态收集、文件序列化和对象恢复是三个独立阶段。
+不加载数据。
 
-### Inspectable checkpoint
+核心逻辑：
 
 ```text
-checkpoint/
-├── metadata.json
-└── tensors.npz
+create global ordering
+      ↓
+indices[rank:total_size:num_replicas]
 ```
 
-JSON 保留可读结构和 schema；NumPy arrays 放在 NPZ 中。没有把整个训练状态藏进一个 pickle blob。
+支持：
 
-### Restore ordering
+- deterministic shuffle；
+- `set_epoch(epoch)`；
+- padding；
+- `drop_last`。
+
+## 7. DDP 不修改 Autograd 公式
+
+`DistributedDataParallel` 在每个 trainable Parameter 上注册 hook：
 
 ```text
-validate
-  ↓
-model
-  ↓
-optimizer
-  ↓
-scheduler
-  ↓
-TrainingState
-  ↓
-RNG LAST
+leaf gradient ready
+      ↓
+Tensor hook
+      ↓
+Reducer.mark_variable_ready(...)
 ```
 
-RNG 最后恢复，确保重新创建模型时消耗的随机数不会改变恢复后的未来随机序列。
+hook 只记录 local gradient ready。
 
-### Device-neutral checkpoint values
+不会在 `Function.backward()` 中加入 distributed 特判，也不会让 backend kernel 知道 DDP。
 
-checkpoint 保存的是 NumPy values；恢复时写入目标对象已有 Storage。因此 CPU 保存的 checkpoint 可以恢复到已经 `.to("edu")` 的模型，而不会偷偷把 Parameter 移回 CPU。
+## 8. 为什么不能在 hook 内等待其他 rank
 
-### Deterministic resume proof
-
-v0.9 的核心集成测试比较：
+本项目当前模拟：
 
 ```text
-Run A
-seed → train 1 ... N
-
-Run B
-seed → train 1 ... K
-     → save
-     → fresh model / optimizer / scheduler
-     → load
-     → train K+1 ... N
+执行 rank0 Python
+然后执行 rank1 Python
 ```
 
-并验证完全一致的：
+如果 rank0 backward hook：
 
 ```text
-loss trajectory
-model state
-Adam moments/counters
-StepLR state/current LR
-TrainingState
-future framework RNG draws
+等待 rank1
 ```
 
-当前验证基线：
+程序就永远执行不到 rank1。
+
+因此采用明确的两阶段模型：
 
 ```text
+Phase 1
+rank0 backward → stage gradients
+rank1 backward → stage gradients
+
+Phase 2
+synchronize_ddp([ddp0, ddp1])
+      ↓
+all ranks launch collectives
+      ↓
+all works complete
+      ↓
+unflatten averaged grads
+```
+
+## 9. Gradient buckets
+
+```python
+ddp = DistributedDataParallel(
+    model,
+    group,
+    bucket_cap_numel=1024,
+)
+```
+
+Reducer 按**反向 parameter registration order**构建 bucket。
+
+原因：reverse-mode backward 中，后面的 layer 往往更早产生梯度。
+
+每个 bucket 记录：
+
+```text
+parameter name
+shape
+numel
+offset
+dtype
+device
+```
+
+不同 dtype/device 不会混在同一 bucket。
+
+## 10. Flatten / Reduce / Unflatten
+
+```text
+weight.grad  ┐
+bias.grad    ├─ flatten → one buffer
+other.grad   ┘
+                 ↓
+             all_reduce
+                 ↓
+             flat result
+                 ↓
+            offsets/shapes
+                 ↓
+        write Parameter.grad
+```
+
+optimizer 完全不知道这个过程发生过。
+
+它只看到同步后的 `.grad`。
+
+## 11. 最重要的 correctness proof
+
+v0.10 CI 真正验证：
+
+```text
+rank0 local batch size = 2
+rank1 local batch size = 2
+local MSE reduction = mean
+      ↓
+average(local gradients)
+```
+
+等于：
+
+```text
+single reference model
+concatenate 4 samples
+MSE reduction = mean
+      ↓
+reference gradient
+```
+
+然后三个模型执行相同 SGD update 后：
+
+```text
+replica0 == replica1 == reference
+```
+
+不是只检查“两个 replica 彼此相同”，还检查它们是否等价于正确的 global-batch 数学结果。
+
+## 12. Initial state synchronization
+
+提供：
+
+```python
+broadcast_module_state(
+    [ddp0, ddp1],
+    src=0,
+)
+```
+
+用于让所有 replica 的 Parameters/Buffers 从同一个源开始。
+
+## 13. Iteration contract
+
+v0.10 推荐训练周期：
+
+```text
+optimizer.zero_grad()
+      ↓
+DDP forward
+      ↓
+loss.backward()
+      ↓
+synchronize_ddp(all_replicas)
+      ↓
+optimizer.step()
+```
+
+如果旧 `.grad` 没清除就进入下一次 DDP forward，会明确报错。
+
+这一版尚不实现 `no_sync()` 多次 backward accumulation。
+
+## 14. Unused parameter
+
+Reducer 期待所有 trainable Parameters 都 ready。
+
+未参与 graph 的 Parameter 会导致同步失败，并列出 missing parameter name。
+
+真实 DDP 的 unused-parameter detection 属于更复杂的 graph/runtime 逻辑，本版明确不实现。
+
+## 15. EDU backend
+
+专项测试验证：
+
+```text
+EDU Parameter
+      ↓
+local backward
+      ↓
+DDP sync
+      ↓
+EDU Parameter 仍保持 EDU
+```
+
+collective transport 仍是 NumPy host simulation，不代表 GPU communication。
+
+## 16. 测试基线
+
+```text
+v0.9
 140 tests
+   │
+   │ +19 distributed tests
+   ▼
+v0.10
+159 tests
 OK
 ```
 
-## 4. 推荐源码学习顺序
+新增覆盖：
+
+- rank/world-size；
+- mean/sum all-reduce；
+- incomplete Work；
+- operation/shape/dtype mismatch；
+- DistributedSampler partition/padding/drop_last/set_epoch；
+- deterministic reversed buckets；
+- gradient-ready hooks；
+- explicit sync；
+- missing rank；
+- unused parameter；
+- stale gradient boundary；
+- initial state broadcast；
+- EDU placement；
+- global-batch reference equivalence。
+
+## 17. 推荐阅读顺序
 
 ```text
-v0.1  autograd.py → tensor.py → ops.py
-v0.2  optim/optimizer.py → optim/* → lr_scheduler.py
-v0.3  data/dataset.py → sampler.py → dataloader.py → mnist.py
-v0.4  storage.py → tensor.py → docs/TENSOR_MEMORY.md
-v0.5  dispatcher.py → operator_registry.py → docs/DISPATCHER.md
-v0.6  kernels.py → nn_ops.py → nn/* → docs/CNN_OPERATORS.md
-v0.7  device.py → backend.py → storage.py → dispatcher.py → docs/DEVICE_BACKEND.md
-v0.8  autograd.py → autograd_engine.py → tensor.py → docs/AUTOGRAD_ENGINE.md
-v0.9  runtime/rng.py → runtime/state.py → runtime/checkpoint.py → docs/TRAINING_RUNTIME.md
+mini_pytorch/distributed/process_group.py
+        ↓
+mini_pytorch/distributed/sampler.py
+        ↓
+mini_pytorch/distributed/reducer.py
+        ↓
+mini_pytorch/distributed/ddp.py
+        ↓
+tests/test_distributed.py
+        ↓
+docs/DISTRIBUTED_DDP.md
+        ↓
+examples/13_ddp_simulation.py
 ```
 
-对应教学示例：
-
-```bash
-python examples/06_mnist_mlp.py
-python examples/07_tensor_memory.py
-python examples/08_dispatcher.py
-python examples/09_cnn_mnist.py
-python examples/10_device_backend.py
-python examples/11_autograd_engine.py
-python examples/12_checkpoint_resume.py
-```
-
-完整回归：
+## 18. 快速运行
 
 ```bash
 pip install -e .
 python -m unittest discover -s tests -v
+python examples/13_ddp_simulation.py
 ```
 
-## 5. 当前明确非目标
+## 19. Explicit non-goals
 
-截至 v0.9，项目刻意还没有实现：
+v0.10 不实现：
 
-- real CUDA / NCCL；
-- asynchronous streams/events；
-- true higher-order Autograd；
-- multiprocessing distributed runtime；
-- DDP gradient buckets；
-- eager-to-graph capture；
-- compiler lowering/fusion；
-- distributed/sharded checkpoint service。
+- multiprocessing / multi-node；
+- NCCL / Gloo / MPI；
+- network transport；
+- CUDA collectives；
+- communication/backward real overlap；
+- `no_sync()`；
+- unused-parameter graph detection；
+- uneven-input join；
+- FSDP / ZeRO；
+- distributed checkpoint；
+- production fault tolerance。
 
-这些会按架构依赖顺序进入后续版本。
+## 20. 下一版本
 
-## 6. 下一版：v0.10 Distributed / DDP Concepts
+`v0.11` 将进入 **Graph IR / Eager-to-Graph Capture**。
 
-下一阶段要回答：
-
-> 如果有多个模型 replica，各自看不同数据并独立 backward，怎样同步 gradient，才能让所有 replica 在 optimizer step 后保持一致？
-
-目标架构：
+核心问题从：
 
 ```text
-local backward
-     ↓
-parameter gradient-ready hooks
-     ↓
-DDP Reducer
-     ↓
-gradient buckets
-     ↓
-ProcessGroup.all_reduce
-     ↓
-averaged gradients
-     ↓
-optimizer.step on each replica
-     ↓
-replica parameters remain equivalent
+多个 replica 如何同步？
 ```
 
-v0.10 会优先构建单进程、确定性的教学型 collective simulation，理解 `rank / world_size / DistributedSampler / ProcessGroup / AllReduce / Reducer / bucket` 的职责边界；不会直接跳到 NCCL 或真实多机网络。
+转向：
 
-详细设计与验收任务见 `Plan.md`。
+```text
+一次 eager Tensor execution
+如何被表示成显式 Graph / Node / Value，
+并再次解释执行？
+```
+
+目标路径：
+
+```text
+eager operators
+      ↓
+trace/capture
+      ↓
+Graph IR
+      ↓
+graph interpreter
+      ↓
+eager-vs-graph equivalence
+```
