@@ -1,252 +1,194 @@
-# Agents.md — mini-pytorch v1.0 Development Contract
+# Agents.md — mini-pytorch v1.0 Release Candidate Contract
 
-> Read this file before changing branch `v1.0`.
+> Read before modifying branch `v1.0`.
 
 ## 1. Branch identity
 
 - Branch: `v1.0`
 - Previous: `v0.15`
 - Theme: Integrated Architecture
-- Status: active until exact frozen-head CI passes
-- Starting baseline: **247 tests / OK**
-- Base main commit: `56191655f1188134e62e965dc58fdd3dcd3d062b`
+- Status: **release candidate**
+- Package version: `1.0.0`
+- Starting baseline: 247 tests / OK
+- Current validated baseline: **251 tests / OK**
+- Validated framework/CI commit: `d49b1872274f790303d719034074b75c270a18c2`
 
-## 2. Dominant learning goal
+## 2. Current directive
 
-v1.0 is a consolidation release.
+The v1.0 mechanism/documentation scope is complete.
 
-The question is not “what new subsystem should be added?” but:
+Do not add another subsystem or optional feature before freeze.
 
-> Can a reader trace one Tensor expression through the complete architecture, understand who owns each decision, and verify the cross-layer behavior with executable proofs?
+Allowed changes before freeze are limited to:
 
-## 3. Required reading order
+- release-document corrections;
+- fixes for failures found by exact-head CI;
+- corrections required for the integrated example to remain executable;
+- consistency fixes inside already-audited v1.0 boundaries.
 
-Before modifying v1.0:
-
-1. `Agents.md`
-2. `version.md`
-3. `README.md`
-4. relevant current source
-5. relevant historical mechanism docs
-6. tests for the touched boundaries
-
-If a source boundary is unclear, inspect the implementation before changing documentation. Documentation must describe the code, not an imagined architecture.
-
-## 4. Allowed v1.0 work
-
-Allowed:
-
-- architecture audit/documentation;
-- small compatibility-preserving API/naming cleanup;
-- focused cross-layer integration tests;
-- integrated educational example;
-- PyTorch subsystem concept mapping;
-- canonical documentation reconciliation;
-- package/release metadata updates;
-- narrow fixes exposed by integration work when they remain inside existing subsystem contracts.
-
-## 5. Forbidden scope expansion
-
-Do not introduce:
-
-- CUDA/Triton codegen;
-- another backend family;
-- symbolic shape engine;
-- multiprocessing/prefetch DataLoader architecture;
-- NCCL/network ProcessGroup;
-- production caching allocator;
-- bytecode/Python compiler;
-- a new compiler/runtime subsystem;
-- feature-parity work justified only by “PyTorch has it”.
-
-If integration exposes a missing major mechanism, document it as a future limitation rather than silently expanding v1.0.
-
-## 6. Architecture ownership rules
-
-Preserve these existing boundaries.
-
-### Tensor / memory
+## 3. Frozen architecture target
 
 ```text
-Storage owns allocation + shared version counter
-Tensor owns shape / stride / offset / requires_grad metadata
-Device describes logical placement
-```
-
-Tensor memory semantics must not move into compiler/runtime planning.
-
-### Dispatcher / backend
-
-```text
-logical operator
-   ↓
-Dispatcher policy
-   ↓
-backend kernel
-```
-
-Backend kernels must not depend on Module, Optimizer, DataLoader, compiler cache or DDP policy.
-
-### Autograd
-
-`AutogradEngine` owns eager backward graph execution. Saved-value version checks and graph lifetime are separate concerns. Do not create a second autograd runtime inside compiler integration tests.
-
-### Training/runtime
-
-Module/Optimizer/Data compose above Tensor/Dispatcher. Checkpoint/RNG/progress state is runtime state, not a Tensor-kernel concern.
-
-### Distributed
-
-DDP/Reducer/ProcessGroup simulate synchronization outside optimizer algorithms and numerical kernels.
-
-### Compiler
-
-```text
-capture
-  ↓
-Graph IR
-  ↓
-guards/cache
-  ↓
-AOT differentiation
-  ↓
-analysis/transforms/lowering
-  ↓
+Tensor / Storage / Device
+      ↓
+Dispatcher / Backend
+      ↓
+AutogradEngine
+      ↓
+Module / Optimizer / Data
+      ↓
+Runtime / Checkpoint / RNG
+      ↓
+Distributed / DDP
+      ↓
+Capture / Guards / Cache
+      ↓
+AOT forward/backward Graphs
+      ↓
+Analysis / Lowering / Fusion
+      ↓
 LoweredProgram
+      ↓
+Lifetime / MemoryPlan / ExecutionPlan
+      ↓
+PlannedExecutor
 ```
 
-Compiler passes must not mutate source Graphs unless the API explicitly promises mutation.
+Preserve the ownership boundaries documented in `docs/ARCHITECTURE_V1.md`.
 
-### Planned runtime
+## 4. Release-candidate evidence
+
+Exact framework commit `d49b1872274f790303d719034074b75c270a18c2` passed:
 
 ```text
-LoweredProgram = what executes
-ExecutionPlan = runtime resource assignment
-```
-
-ExternalOps remain Dispatcher-owned. Planner-owned output buffers remain limited to explicitly safe pointwise temporaries.
-
-## 7. Public API audit rules
-
-When auditing exports:
-
-- prefer stable learning concepts over implementation helpers;
-- do not remove a public name without checking repository docs/examples/tests;
-- do not rename merely to mimic PyTorch spelling;
-- internal/private helpers should not become public just to make the integrated example shorter;
-- integration examples should import from supported public module paths where such paths already exist.
-
-Any API cleanup must have a compatibility rationale and tests where behavior changes.
-
-## 8. Integrated example rules
-
-`examples/19_integrated_architecture.py` must separate phases explicitly:
-
-```text
-training-time
-runtime/checkpoint state
-compiler-time
-planned runtime
-verification
-```
-
-Do not imply that graph compilation/checkpoint/DDP are all necessarily executed inside one production loop.
-
-The example should be deterministic, self-contained and require no external dataset/network download.
-
-## 9. PyTorch mapping rules
-
-`docs/PYTORCH_MAPPING.md` is conceptual correspondence only.
-
-Use phrasing such as:
-
-```text
-concept family
-educational analogue
-important simplification
-```
-
-Do not claim source equivalence, API parity, performance parity or production behavior.
-
-## 10. Testing contract
-
-Required v1.0 integration proofs should cover only meaningful cross-layer seams:
-
-```text
-Tensor / Dispatcher / Backend / Autograd
-Module / Optimizer / Runtime checkpoint
-Capture / Cache / AOT / Lowering / ExecutionPlan
-```
-
-Do not create one huge brittle test that duplicates the entire historical suite.
-
-Full regression command:
-
-```bash
 python -m unittest discover -s tests -v
+→ Ran 251 tests
+→ OK
 ```
 
-Never claim a test count until the exact code state ran successfully.
+and:
 
-## 11. Documentation contract
+```text
+python examples/19_integrated_architecture.py
+→ checkpoint restore PASS
+→ graph cache hit/reuse PASS
+→ planned output matches eager PASS
+→ planned gradients match eager PASS
+```
 
-Review before release:
+GitHub Actions environment:
+
+```text
+Ubuntu 24.04
+Python 3.11.17
+NumPy 2.4.6
+```
+
+## 5. Release artifacts that must remain present
 
 ```text
 README.md
 version.md
 Agents.md
 MANIFEST.txt
+pyproject.toml
+mini_pytorch/_version.py
+
 docs/ARCHITECTURE.md
 docs/ARCHITECTURE_V1.md
+docs/API_AUDIT.md
 docs/LEARNING_PATH.md
-docs/ROADMAP.md
 docs/PYTORCH_MAPPING.md
+docs/ROADMAP.md
+
 examples/19_integrated_architecture.py
+tests/test_v1_integration.py
 ```
 
-`Plan.md` remains canonical on `main`; the v1.0 branch uses `version.md` + this `Agents.md` for release scope.
+## 6. API policy
 
-Historical docs may preserve historical “next version” statements if clearly version-specific. Canonical current docs must not be stale.
+The v1.0 API audit intentionally chose **no breaking surface rewrite**.
 
-## 12. Release workflow
+Do not remove/rename historical public learning concepts merely for cosmetic similarity with PyTorch.
+
+Keep these distinctions explicit:
 
 ```text
-active v1.0
-   ↓
-architecture/docs/tests/example complete
-   ↓
-package version 1.0.0
-   ↓
-full regression
-   ↓
-exact release-candidate HEAD CI green
-   ↓
-freeze version.md + Agents.md
-   ↓
+project educational analogue
+!=
+upstream source/API parity
+```
+
+## 7. Integrated example policy
+
+The integrated example separates:
+
+```text
+eager training
+runtime/checkpoint state
+compiler specialization
+AOT/lowering/planned runtime
+```
+
+Do not force DDP/checkpoint/compiler execution into one unrealistic production loop. The architectural integration is expressed by ownership boundaries and executable cross-layer proofs.
+
+## 8. CI policy
+
+Workflow must continue to run for:
+
+```text
+main
+v*
+```
+
+Required release gate:
+
+```bash
+python -m unittest discover -s tests -v
+python examples/19_integrated_architecture.py
+```
+
+Never claim a later HEAD is validated by the earlier `d49b1872...` run. Every release-candidate/frozen/main HEAD gets its own CI result.
+
+## 9. Explicit non-goals
+
+Do not add before freeze:
+
+- CUDA/Triton/codegen;
+- new backend families;
+- symbolic shapes;
+- worker/prefetch DataLoader runtime;
+- NCCL/network distributed runtime;
+- production allocator/profiler;
+- whole-Python compiler;
+- PyTorch feature parity.
+
+## 10. Freeze workflow
+
+```text
+current release-candidate docs commit
+      ↓
+exact HEAD CI green
+      ↓
+change only version.md + Agents.md to frozen status
+      ↓
 exact frozen HEAD CI green
-   ↓
+      ↓
+verify main...v1.0 is pure fast-forward
+      ↓
 fast-forward v1.0 into main
-   ↓
-restore canonical integrated README / Agents / Plan
-   ↓
+      ↓
+restore canonical main README / Agents / Plan
+      ↓
 exact main HEAD CI green
 ```
 
-No future work begins from a stale pre-integration branch.
+## 11. Frozen branch rule after release
 
-## 13. Definition of Done
+After v1.0 freezes, permitted branch changes are only:
 
-v1.0 is complete only when:
+- documentation corrections;
+- tests clarifying already-promised behavior;
+- narrow fixes inside the frozen v1.0 contract.
 
-- architecture ownership is documented from actual code;
-- API/naming audit is complete;
-- integrated example runs without external downloads;
-- cross-layer tests pass;
-- PyTorch mapping is explicit and caveated;
-- docs agree on terminology and baseline;
-- package reports `1.0.0`;
-- release-candidate exact HEAD CI is green;
-- frozen exact HEAD CI is green;
-- validated tree is integrated into `main`;
-- final main exact HEAD CI is green.
+Future architecture work must start from latest `main` and first justify a new missing mental model.

@@ -5,18 +5,22 @@
 - **Branch:** `v1.0`
 - **Previous version:** `v0.15`
 - **Theme:** Integrated Architecture
-- **Status:** active development
-- **Package version target:** `1.0.0`
-- **Starting validated baseline:** **247 / 247 tests passed**
+- **Status:** release candidate
+- **Package version:** `1.0.0`
+- **Starting validated baseline:** 247 tests / OK
+- **Current release-candidate baseline:** **251 / 251 tests passed**
 - **Base main commit:** `56191655f1188134e62e965dc58fdd3dcd3d062b`
+- **Validated framework/CI commit:** `d49b1872274f790303d719034074b75c270a18c2`
 
-v1.0 asks one final question:
+v1.0 answers:
 
 > Can the complete mini-pytorch learning stack be traced, explained, exercised and validated as one coherent architecture without adding another major subsystem?
 
+The release-candidate answer is yes: the 0.x mechanism-building sequence now composes through explicit cross-layer tests and one end-to-end executable example.
+
 ## Core delta from v0.15
 
-v0.15 completed the last planned mechanism:
+v0.15 completed the last new mechanism:
 
 ```text
 LoweredProgram
@@ -30,7 +34,7 @@ ExecutionPlan
 PlannedExecutor
 ```
 
-v1.0 does **not** add another mechanism layer. It consolidates the complete system:
+v1.0 consolidates instead of extending:
 
 ```text
 all validated 0.x mechanisms
@@ -47,109 +51,151 @@ mini-pytorch ↔ PyTorch concept map
       ↓
 documentation reconciliation
       ↓
-release-quality snapshot
+release-quality validation
 ```
 
-## Required deliverables
+## Completed deliverables
 
-### 1. Architecture audit
+### Architecture audit
 
-Create `docs/ARCHITECTURE_V1.md` that describes actual ownership and dependency boundaries for:
+Added:
 
 ```text
-Storage / Device
-Tensor
-Dispatcher / Backend
-Autograd
-NN / Optimizer / Data
-Training Runtime / Checkpoint
+docs/ARCHITECTURE_V1.md
+```
+
+It audits the actual source ownership/dependency/failure boundaries for:
+
+```text
+Device / Backend / Storage / Tensor
+Dispatcher / kernels
+AutogradEngine
+Module / Optimizer / Data
+Runtime / Checkpoint / RNG
 Distributed / DDP
-Graph capture / Guards / Cache
+Capture / Guards / Cache
 AOT differentiation
 Lowering / Fusion
-Runtime profiling / MemoryPlan / ExecutionPlan
+Lifetime / MemoryPlan / ExecutionPlan
+PlannedExecutor
 ```
 
-For every layer document:
+### Public API / naming audit
 
-- responsibility / owner;
-- inputs and outputs;
-- allowed dependencies;
-- forbidden dependencies;
-- important invariants;
-- explicit educational simplifications;
-- failure boundary.
-
-### 2. Public API / naming audit
-
-Audit exported learning APIs from:
+Added:
 
 ```text
-mini_pytorch
-mini_pytorch.nn
-mini_pytorch.optim
-mini_pytorch.data
-mini_pytorch.runtime
-mini_pytorch.distributed
-mini_pytorch.compiler
+docs/API_AUDIT.md
 ```
 
-Only small compatibility-preserving cleanup is allowed. No feature-parity sprint.
+Result: no breaking API rewrite is justified. Low-level classes remain intentionally public learning surfaces.
 
-### 3. Integrated example
-
-Create `examples/19_integrated_architecture.py` that intentionally demonstrates phases rather than pretending every subsystem belongs in one runtime loop:
+Small v1.0 cleanup:
 
 ```text
-training phase
-  model/data → eager forward/backward → optimizer
-
-runtime state phase
-  checkpoint/RNG/progress round-trip
-
-compiler phase
-  capture → graph replay/cache → AOT forward/backward
-
-lowering/runtime phase
-  lower → ExecutionPlan → PlannedExecutor
-
-verification phase
-  eager/reference/planned outputs and gradients agree
+mini_pytorch/_version.py
+      ↓
+mini_pytorch.__version__
+checkpoint framework_version
+pyproject package version
 ```
 
-### 4. Cross-layer integration tests
+all use release `1.0.0` semantics.
 
-Add focused tests proving composition across existing boundaries, especially:
+### Cross-layer tests
+
+Added:
+
+```text
+tests/test_v1_integration.py
+```
+
+It proves composition across:
 
 ```text
 Tensor → Dispatcher → Backend → Autograd
-Module → Optimizer → Checkpoint / restore
-Capture → Guards / Cache → AOT → Lowering → ExecutionPlan
+Module → Optimizer → Scheduler → Checkpoint restore
+Capture → Guards/Cache → AOT → Lowering → ExecutionPlan
+Planned backward → eager gradient reference
 ```
 
-Do not duplicate every historical subsystem test.
+### Integrated example
 
-### 5. PyTorch conceptual mapping
-
-Create `docs/PYTORCH_MAPPING.md` mapping mini-pytorch learning concepts to real PyTorch subsystem families while explicitly documenting simplifications and non-parity.
-
-### 6. Documentation reconciliation
-
-Review and reconcile canonical docs:
+Added:
 
 ```text
-README.md
-Agents.md
-Plan.md on main after integration
+examples/19_integrated_architecture.py
+```
+
+The example separates real phases:
+
+```text
+1. eager training
+2. runtime/checkpoint state
+3. guarded graph cache
+4. eager gradient reference
+5. AOT + lowering + planned runtime
+```
+
+GitHub Actions now runs this example as a release gate.
+
+### PyTorch conceptual mapping
+
+Added:
+
+```text
+docs/PYTORCH_MAPPING.md
+```
+
+The map explicitly distinguishes:
+
+```text
+conceptual responsibility correspondence
+!=
+source/API/performance parity
+```
+
+### Documentation reconciliation
+
+Updated/replaced stale canonical docs:
+
+```text
 docs/ARCHITECTURE.md
 docs/LEARNING_PATH.md
 docs/ROADMAP.md
 MANIFEST.txt
+README.md
 ```
 
-Historical version-specific docs may remain historically accurate.
+The old roadmap that still described v0.3 as active has been replaced by the completed learning sequence.
 
-## Frozen architecture entering v1.0
+### CI governance
+
+The old workflow only matched:
+
+```text
+main
+v0.*
+```
+
+which excluded `v1.0`.
+
+v1.0 changes the branch gate to:
+
+```text
+main
+v*
+```
+
+and adds:
+
+```bash
+python examples/19_integrated_architecture.py
+```
+
+after the full unit suite.
+
+## Integrated architecture
 
 ```text
 Python API
@@ -165,6 +211,8 @@ Module / Optimizer / Data
 Training Runtime / Checkpoint / RNG
    ↓
 Distributed / DDP simulation
+
+Python Tensor function
    ↓
 Graph capture / Guards / Cache
    ↓
@@ -181,7 +229,7 @@ MemoryPlan / ExecutionPlan
 PlannedExecutor
 ```
 
-## Invariants that v1.0 must preserve
+## Preserved invariants
 
 - Tensor layout remains Storage + shape + stride + offset + Device.
 - Dispatcher remains the operator/backend policy boundary.
@@ -197,49 +245,110 @@ PlannedExecutor
 - runtime buffer reuse never violates output/saved-value lifetime.
 - older executors remain correctness references for newer execution layers.
 
-## Non-goals
+## Correctness proofs
 
-v1.0 must not add:
+For supported execution:
 
-- CUDA/Triton code generation;
+```text
+Eager Tensor execution
+      ==
+GraphInterpreter
+      ==
+LoweredExecutor
+      ==
+PlannedExecutor
+```
+
+For the supported AOT integration path:
+
+```text
+eager Autograd gradients
+      ==
+AOT explicit backward Graph
+      ==
+lowered/planned backward gradients
+```
+
+## Release-candidate validation
+
+Validated commit:
+
+```text
+d49b1872274f790303d719034074b75c270a18c2
+```
+
+GitHub Actions environment:
+
+```text
+Ubuntu 24.04
+Python 3.11.17
+NumPy 2.4.6
+```
+
+Unit-test result:
+
+```text
+Ran 251 tests in 1.154s
+OK
+```
+
+Integrated-example result includes:
+
+```text
+mini-pytorch 1.0.0
+cache_entries=1
+compile_count=1
+hit_count=1
+planned output matches eager: PASS
+planned gradients match eager: PASS
+```
+
+## Important v1.0 files
+
+```text
+mini_pytorch/_version.py
+tests/test_v1_integration.py
+examples/19_integrated_architecture.py
+docs/ARCHITECTURE_V1.md
+docs/API_AUDIT.md
+docs/PYTORCH_MAPPING.md
+```
+
+## Explicit non-goals
+
+v1.0 does not add:
+
+- real CUDA/Triton code generation;
 - a new accelerator backend;
 - symbolic dynamic-shape compiler;
 - production multiprocessing DataLoader;
 - NCCL/network DDP;
 - production allocator;
 - whole-Python compiler;
+- complete higher-order autodiff;
 - PyTorch API feature parity;
 - marketing-style benchmark claims.
 
-## Validation policy
+## Remaining release steps
 
-Main command:
+No feature work remains for v1.0.
 
-```bash
-python -m unittest discover -s tests -v
+The only remaining steps are:
+
+```text
+exact release-candidate docs HEAD CI
+      ↓
+freeze version.md + Agents.md
+      ↓
+exact frozen HEAD CI
+      ↓
+fast-forward into main
+      ↓
+restore canonical integrated main docs
+      ↓
+exact main HEAD CI
 ```
-
-Additionally run educational examples that do not require external downloads.
-
-Never claim v1.0 complete until the exact release-candidate HEAD and exact frozen HEAD both pass CI.
-
-## Definition of Done
-
-v1.0 freezes only after:
-
-1. `docs/ARCHITECTURE_V1.md` matches actual source boundaries;
-2. public APIs/naming are audited and any cleanup is tested;
-3. `examples/19_integrated_architecture.py` demonstrates the major phases coherently;
-4. focused cross-layer integration tests are green;
-5. `docs/PYTORCH_MAPPING.md` clearly distinguishes analogy from parity;
-6. canonical docs and MANIFEST are consistent;
-7. package version is `1.0.0`;
-8. all historical and v1.0 tests pass on exact branch HEAD;
-9. branch is frozen after release-candidate validation;
-10. exact frozen HEAD passes CI;
-11. validated v1.0 tree is integrated into `main`;
-12. canonical `main` docs are restored as the integrated-release view.
 
 ## After v1.0
 
-There is no automatic `v1.1` roadmap. Any post-v1.0 expansion requires a separately justified learning goal rather than silently continuing the original 0.x feature sequence.
+There is no automatic `v1.1` roadmap. Any post-v1.0 expansion requires a separately justified missing mental model and a new explicit roadmap.
