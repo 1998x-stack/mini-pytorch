@@ -1,3 +1,4 @@
+.github/workflows/tests.yml
 .gitignore
 Agents.md
 LICENSE
@@ -6,7 +7,9 @@ Plan.md
 README.md
 version.md
 pyproject.toml
+docs/API_AUDIT.md
 docs/ARCHITECTURE.md
+docs/ARCHITECTURE_V1.md
 docs/AOT_AUTOGRAD.md
 docs/AUTOGRAD_ENGINE.md
 docs/CNN_OPERATORS.md
@@ -20,6 +23,7 @@ docs/LEARNING_PATH.md
 docs/LOWERING_FUSION.md
 docs/MNIST_TRAINING.md
 docs/OPTIMIZERS_AND_SCHEDULERS.md
+docs/PYTORCH_MAPPING.md
 docs/ROADMAP.md
 docs/RUNTIME_PERFORMANCE.md
 docs/TENSOR_MEMORY.md
@@ -42,7 +46,9 @@ examples/15_graph_cache.py
 examples/16_aot_autograd.py
 examples/17_lowering_fusion.py
 examples/18_runtime_performance.py
+examples/19_integrated_architecture.py
 mini_pytorch/__init__.py
+mini_pytorch/_version.py
 mini_pytorch/aot_kernels.py
 mini_pytorch/autograd.py
 mini_pytorch/autograd_engine.py
@@ -129,3 +135,4 @@ tests/test_optim_extended.py
 tests/test_runtime_checkpoint.py
 tests/test_runtime_performance.py
 tests/test_storage.py
+tests/test_v1_integration.py

@@ -1,173 +1,128 @@
 # Architecture
 
-## 1. 总览
+> Current architecture index for mini-pytorch v1.0.
+>
+> For the full ownership/dependency audit, read [`ARCHITECTURE_V1.md`](ARCHITECTURE_V1.md). Historical subsystem details remain in the version-specific documents in this directory.
+
+## 1. Complete stack
 
 ```text
-User API
-  │
-  ├── Tensor operators
-  │      ↓
-  │   Function.apply
-  │      ↓
-  │   NumPy forward
-  │      ↓
-  │   GradFn graph
-  │
-  ├── nn.Module
-  │      ↓
-  │   Parameter registry
-  │
-  └── Optimizer
-         ↓
-      Parameter update
+Python API
+   ↓
+Tensor / Storage / Device
+   ↓
+Dispatcher / Backend
+   ↓
+Eager AutogradEngine
+   ↓
+Module / Optimizer / Data
+   ↓
+Training Runtime / Checkpoint / RNG
+   ↓
+Distributed / DDP simulation
+
+Python Tensor function
+   ↓
+Graph capture
+   ↓
+Signatures / Guards / GraphCache
+   ↓
+AOT forward + backward Graphs
+   ↓
+Analysis / Lowering / Fusion
+   ↓
+LoweredProgram
+   ↓
+Profiling / Lifetime Analysis
+   ↓
+MemoryPlan / ExecutionPlan
+   ↓
+PlannedExecutor
 ```
 
-## 2. Autograd 数据结构
+## 2. Five boundaries to remember
 
-每个需要梯度的非叶子 Tensor 持有一个 `GradFn`：
+### Tensor memory
 
 ```text
-Tensor
-├── data
-├── requires_grad
-├── grad
-└── _grad_fn
-      ├── function
-      ├── parents
-      └── ctx
+Storage = allocation + shared version
+Tensor = shape + stride + offset + autograd-facing metadata
 ```
 
-### Function
-
-一个 Operator 的数学行为：
+### Operator execution
 
 ```text
-forward(ctx, inputs...) -> output
-backward(ctx, grad_output) -> grad_inputs...
+logical operator
+      ↓
+Dispatcher
+      ↓
+backend kernel
 ```
 
-### Context
+Autograd/NoGrad policy is kept above backend numerical kernels.
 
-只保存 backward 真正需要的中间结果。
-
-例如乘法：
+### Training ownership
 
 ```text
-z = x * y
+Module organizes parameters
+Autograd computes gradients
+Optimizer updates parameters
+DataLoader supplies batches
+Runtime preserves reproducible state
+DDP synchronizes gradients
 ```
 
-backward 需要 x 和 y，因此 forward 使用：
+These are separate responsibilities.
 
-```python
-ctx.save_for_backward(x, y)
-```
-
-## 3. 为什么 graph 挂在输出 Tensor 上
-
-执行：
-
-```python
-z = x * y
-```
-
-得到：
+### Compiler ownership
 
 ```text
-x ----\
-       MulBackward -> z
-y ----/
+Graph = logical dataflow
+LoweredProgram = lowered work
+ExecutionPlan = runtime resource assignment
 ```
 
-下一步：
+### Correctness references
 
-```python
-q = z + x
-```
-
-变为：
+For supported compiled execution:
 
 ```text
-x ----\
-       MulBackward -> z --\
-y ----/                  AddBackward -> q
-x ----------------------/
+Eager
+ == GraphInterpreter
+ == LoweredExecutor
+ == PlannedExecutor
 ```
 
-因此 eager mode 中，图是随着 Python 程序实际执行动态产生的。
+For supported AOT gradients, eager Autograd remains the numerical reference.
 
-## 4. backward 为什么先拓扑排序
-
-如果一个节点被重复使用：
+## 3. Recommended architecture reading order
 
 ```text
-       ┌---- path A ----┐
-x -----|                +---- loss
-       └---- path B ----┘
+TENSOR_MEMORY.md
+DEVICE_BACKEND.md
+DISPATCHER.md
+AUTOGRAD_ENGINE.md
+TRAINING_RUNTIME.md
+DISTRIBUTED_DDP.md
+GRAPH_IR.md
+GRAPH_CACHE.md
+AOT_AUTOGRAD.md
+LOWERING_FUSION.md
+RUNTIME_PERFORMANCE.md
+ARCHITECTURE_V1.md
+PYTORCH_MAPPING.md
 ```
 
-必须先收集来自所有下游分支的梯度，再继续向更上游传播。
+## 4. v1.0 scope
 
-因此 DAG 的 reverse topological traversal 是自然方案。
+v1.0 integrates the existing mechanism chain. It does not claim:
 
-## 5. Module 层
+- PyTorch API parity;
+- production CUDA/Triton code generation;
+- production multiprocessing DataLoader;
+- real network/NCCL DDP;
+- symbolic dynamic-shape compilation;
+- production allocator/profiler behavior;
+- performance parity.
 
-`Module` 负责组织参数，而不是负责求导。
-
-```text
-Module
-├── _parameters
-├── _modules
-├── _buffers
-└── training
-```
-
-Autograd 不关心参数属于哪个 Module；它只认识 Tensor graph。
-
-Optimizer 也不关心模型结构；它只拿到 Parameter 列表。
-
-这种解耦非常关键：
-
-```text
-Autograd ≠ Module ≠ Optimizer
-```
-
-## 6. Optimizer 层
-
-`Optimizer` 不做求导。
-
-它只消费已经由 backward 得到的：
-
-```text
-parameter.grad
-```
-
-然后修改：
-
-```text
-parameter.data
-```
-
-这解释了为什么训练顺序必须是：
-
-```text
-forward
-loss
-zero_grad
-backward
-step
-```
-
-## 7. Parameter Groups
-
-Optimizer 保存：
-
-```text
-param_groups = [
-  {params: [...], lr: ..., ...},
-  {params: [...], lr: ..., ...}
-]
-```
-
-因此超参数并不是一定“一个优化器只有一套”。
-
-这是 fine-tuning、分层学习率等功能的基础。
+The architecture is considered complete for the project's original learning sequence because every major ownership boundary is now executable and testable in a readable Python/NumPy implementation.
