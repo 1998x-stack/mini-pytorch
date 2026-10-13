@@ -2,13 +2,11 @@
 
 > Canonical roadmap for `main`.
 >
-> **Invariant:** `main` is always the newest integrated, validated state. Version branches are readable learning snapshots. A completed version is validated, frozen, integrated into `main`, then only `main` advances the project roadmap.
+> **Invariant:** `main` is always the newest integrated, validated state. Version branches are readable learning snapshots.
 
 ## 1. Project purpose
 
 mini-pytorch removes one layer of PyTorch “magic” at a time with readable Python/NumPy implementations.
-
-The roadmap follows architectural dependency order:
 
 ```text
 Tensor / Dynamic Autograd
@@ -44,823 +42,458 @@ Runtime / Performance
 Integrated architecture
 ```
 
-One version should introduce one dominant mental model and preserve earlier invariants.
-
 ---
 
 # 2. Completed milestones
 
 ## v0.1 — Eager Tensor + Dynamic Autograd ✅
-
-```text
-Tensor → Function → dynamic graph → backward → Parameter → Module → Optimizer
-```
-
-Core mechanisms:
-
-- Tensor / requires_grad;
-- dynamic reverse-mode autodiff;
-- gradient accumulation;
-- Module / Parameter / Linear / Sequential;
-- SGD / Adam;
-- numerical gradcheck.
+Dynamic reverse-mode autodiff, Module/Parameter, Linear, SGD/Adam, gradcheck.
 
 ## v0.2 — Optimizer State + LR Scheduler ✅
-
-```text
-Parameter → Optimizer groups/state → LR Scheduler
-```
-
-Core mechanisms:
-
-- SGD variants;
-- Adam / AdamW / Adamax;
-- RMSprop / Adagrad;
-- parameter groups;
-- optimizer state serialization;
-- major LR schedulers.
+Optimizer families, parameter groups/state, AdamW/RMSprop/Adagrad/Adamax, LR schedulers.
 
 ## v0.3 — Dataset / Sampler / DataLoader + MNIST ✅
-
-```text
-Dataset → Sampler → BatchSampler → DataLoader → Tensor batch
-```
-
-Core mechanisms:
-
-- Dataset / TensorDataset;
-- SequentialSampler / RandomSampler;
-- BatchSampler / DataLoader;
-- MNIST IDX reader;
-- CrossEntropyLoss;
-- MLP MNIST training.
+Dataset/Sampler/BatchSampler/DataLoader separation, MNIST, CrossEntropy, MLP training.
 
 ## v0.4 — Tensor Memory Model ✅
-
-```text
-Storage + shape + stride + storage_offset + VersionCounter
-```
-
-Core mechanisms:
-
-- views / aliasing;
-- transpose / permute / slicing;
-- `view()` vs `reshape()`;
-- contiguous semantics;
-- inplace mutation;
-- saved-version Autograd safety.
+Storage, shape/stride/offset, views, contiguous, inplace mutation, VersionCounter.
 
 ## v0.5 — Operator Registry + Dispatcher ✅
-
-```text
-Tensor API → Operator Schema → Dispatcher → DispatchKey → redispatch
-```
-
-Core mechanisms:
-
-- schema/kernel registry;
-- DispatchKeySet priority;
-- Autograd/NoGrad/backend separation;
-- redispatch;
-- backend numerical kernels.
+Schema/kernel registry, DispatchKeySet, Autograd/NoGrad/backend routing, redispatch.
 
 Validated baseline: **80 tests**.
 
-## v0.6 — Neural-Network Operator Stack / CNN ✅
-
-```text
-nn.Module → functional op → Dispatcher → Autograd wrapper → backend kernel
-```
-
-Core mechanisms:
-
-- Conv2d reference + im2col;
-- Conv2d gradients;
-- MaxPool2d;
-- Dropout;
-- BatchNorm;
-- CNN MNIST.
+## v0.6 — CNN Operator Stack ✅
+Conv2d reference/im2col/backward, MaxPool2d, Dropout, BatchNorm, CNN MNIST.
 
 Validated baseline: **90 tests**.
 
-## v0.7 — Device / Backend Abstraction ✅
-
-```text
-Tensor metadata → Storage + Device → Backend → Dispatcher
-```
-
-Core mechanisms:
-
-- Device;
-- backend registry;
-- CPU + deterministic EDU backend;
-- Tensor.to(device);
-- differentiable transfer;
-- device-aware dispatch;
-- Module.to(device).
+## v0.7 — Device / Backend ✅
+Device, backend registry, CPU/EDU, Tensor.to, device-aware dispatch, Module.to.
 
 Validated baseline: **103 tests**.
 
 ## v0.8 — Advanced Autograd Engine ✅
-
-```text
-GradFn / Context → AutogradEngine → VJP / lifetime / hooks
-```
-
-Core mechanisms:
-
-- explicit Engine;
-- graph lifetime / release;
-- retain_graph;
-- retain_grad;
-- gradient hooks;
-- custom Function path.
+Graph lifetime, retain_graph, retain_grad, hooks, custom Function lifecycle.
 
 Validated baseline: **123 tests**.
 
-## v0.9 — Training Runtime / Serialization / Reproducibility ✅
-
-```text
-model + optimizer + scheduler + RNG + progress
-      ↓
-CheckpointState
-      ↓
-validated deterministic resume
-```
-
-Core mechanisms:
-
-- framework RNG;
-- TrainingState;
-- JSON + NPZ checkpoints;
-- optimizer/scheduler restore;
-- RNG restore-last;
-- uninterrupted-vs-resumed exact proof.
+## v0.9 — Training Runtime / Checkpoint / RNG ✅
+TrainingState, framework RNG, JSON+NPZ checkpoint, deterministic resume proof.
 
 Validated baseline: **140 tests**.
 
 ## v0.10 — Distributed / DDP Concepts ✅
-
-```text
-DistributedSampler
-      ↓
-local backward
-      ↓
-Parameter hooks
-      ↓
-Reducer / buckets
-      ↓
-ProcessGroup all_reduce
-      ↓
-synchronized gradients
-```
-
-Core mechanisms:
-
-- rank / world-size;
-- in-process ProcessGroup;
-- SUM/MEAN all-reduce;
-- DistributedSampler;
-- DDP wrapper;
-- Reducer / gradient buckets;
-- explicit synchronization barrier;
-- global-batch reference equivalence.
+DistributedSampler, ProcessGroup, all-reduce, DDP Reducer/buckets, global-batch equivalence.
 
 Validated baseline: **159 tests**.
 
 ## v0.11 — Graph IR / Eager-to-Graph Capture ✅
 
 ```text
-Python eager function
-      ↓
-Dispatcher.dispatch
-      ├── normal eager execution
-      └── capture observer
-              ↓
-       Value / Node / Graph
-              ↓
-       GraphInterpreter
-              ↓
-          Dispatcher replay
+Python eager
+   ↓
+Dispatcher observer
+   ↓
+Value / Node / Graph
+   ↓
+GraphInterpreter
+   ↓
+Dispatcher replay
+```
+
+Implemented stable textual IR, constants, GraphBreak, CPU/EDU replay, forward/backward equivalence.
+
+Validated baseline: **176 tests**.
+
+## v0.12 — Guards / Graph Cache / Recompile ✅
+
+```text
+runtime call
+    ↓
+InputSignature
+    ↓
+GuardSet
+    ↓
+GraphCache
+ ┌──────┴──────┐
+ ▼             ▼
+hit           miss
+ │              │
+replay        capture
 ```
 
 Implemented:
 
-- explicit `Value`, `Node`, `Graph` IR;
-- graph input / constant / intermediate values;
-- TensorConstant capture-by-value;
-- structured args / kwargs;
-- deterministic Value/Node ids;
-- stable textual IR;
-- Dispatcher-level outer logical-op observation;
-- GraphInterpreter replay through Dispatcher;
-- CPU/EDU replay;
-- trace NoGrad → replay Autograd behavior;
-- GraphBreakError for unsupported dynamic dataflow;
-- eager-vs-replay forward equality;
-- eager-vs-replay input-gradient equality;
-- matmul and conv2d replay tests.
+- TensorSignature / InputSignature;
+- exact shape/dtype/device/requires-grad specialization;
+- grad-mode specialization;
+- inspectable GuardResult/GuardSet;
+- multi-entry GraphCache;
+- CompiledFunction / compile_graph;
+- compile/recompile/hit/miss/GraphBreak stats;
+- non-mutating explain();
+- CPU/EDU specialization;
+- multi-input specialization;
+- eager-vs-compiled forward/backward equivalence;
+- explicit closure Tensor capture-by-value policy.
 
-Validated baseline: **176 tests**.
+Validated baseline: **192 tests**.
 
 Primary learning question:
 
-> How can eager logical-operator execution be represented as explicit data without duplicating numerical execution or Autograd?
+> When is a captured Graph still valid for a new runtime call, and how can multiple valid specializations coexist?
 
 ---
 
-# 3. Current next milestone — v0.12 Guards / Graph Cache / Recompile 🎯
+# 3. Current next milestone — v0.13 AOTAutograd-like Graph Differentiation 🎯
 
-## 3.1 Why guards come after Graph IR
+## 3.1 Why AOTAutograd comes now
 
-v0.11 can capture one eager execution into a reusable Graph object.
-
-But this immediately creates a new correctness problem.
-
-Suppose a graph was captured with:
+The project now has:
 
 ```text
-shape=(2, 4)
-dtype=float64
-device=cpu
-requires_grad=True
-grad mode enabled
+logical forward Graph          v0.11
+      +
+validity/cache semantics       v0.12
 ```
 
-A future call may arrive with:
+But differentiation is still executed by the eager AutogradEngine:
 
 ```text
-shape=(8, 4)
+GraphInterpreter forward
+      ↓
+Tensor / GradFn graph
+      ↓
+AutogradEngine.backward()
+      ↓
+Python/NumPy VJP formulas
 ```
 
-or:
+The next question is:
 
-```text
-device=edu
-```
+> Can reverse-mode differentiation itself become an explicit graph program?
 
-or:
-
-```text
-requires_grad=False
-```
-
-The question is no longer:
-
-> Can we replay a Graph?
-
-It becomes:
-
-> Is this particular Graph valid for this particular runtime call?
-
-That is the conceptual role of **guards**.
-
-Once guards exist, the next question follows naturally:
-
-> If several previously captured graphs exist, can one of them be reused instead of capturing again?
-
-That is the role of a **graph cache**.
-
----
+This is the conceptual bridge toward AOTAutograd-like systems.
 
 ## 3.2 Target architecture
 
 ```text
-                    Python callable
-                         │
-                         ▼
-                    runtime inputs
-                         │
-                         ▼
-                    InputSignature
-                         │
-                         ▼
-                       Guards
-                         │
-                         ▼
-                    GraphCache
-                 ┌───────┴────────┐
-                 ▼                ▼
-               HIT               MISS
-                 │                │
-                 ▼                ▼
-        GraphInterpreter        capture
-                 │                │
-                 │                ▼
-                 │           new Graph
-                 │                │
-                 │                ▼
-                 └────────── cache entry
+                 forward Graph
+                      │
+                      ▼
+              differentiate_graph
+                      │
+          ┌───────────┴───────────┐
+          ▼                       ▼
+   forward execution        backward Graph
+          │                       │
+          ├── saved values ───────┤
+          │                       │
+          ▼                       ▼
+     user outputs          grad-output inputs
                                   │
                                   ▼
-                           future cache hits
+                          GraphInterpreter
+                                  │
+                                  ▼
+                           input gradients
 ```
 
-v0.12 is a **specialization/reuse milestone**, not a Python bytecode interception milestone.
+The eager AutogradEngine remains the reference oracle.
 
 ---
 
-# 3.3 v0.12.1 — Runtime Tensor signature
+## 3.3 v0.13.1 — Differentiation metadata
 
-Introduce an immutable signature for one Tensor input.
-
-Suggested fields:
+Introduce explicit metadata describing differentiation roles:
 
 ```text
-shape
-dtype
-device
-requires_grad
+DifferentiationSpec
+├── forward input ids requiring grad
+├── forward output ids to differentiate
+├── saved value ids required by backward
+└── gradient output/input ordering
 ```
 
-Possible API:
+The ordering must be deterministic and inspectable.
 
-```python
-TensorSignature.from_tensor(x)
-```
+Tests:
 
-A call signature for N graph inputs becomes:
+- scalar output;
+- one/multiple grad-requiring inputs;
+- non-grad input exclusion;
+- deterministic ordering.
+
+---
+
+## 3.4 v0.13.2 — Backward graph IR boundary
+
+Reuse the existing `Graph` representation rather than inventing an unrelated compiler IR.
+
+Backward graph inputs should explicitly represent:
 
 ```text
-InputSignature(
-    tensors=(...),
-    grad_enabled=...,
-)
-```
-
-Why grad mode belongs in the call signature:
-
-```text
-same Tensor metadata
+saved forward values
 +
-no_grad enabled/disabled
-→ different Autograd execution behavior
+grad outputs
 ```
 
-v0.12 should specialize conservatively rather than pretend to support arbitrary dynamic shapes.
+Backward graph outputs should represent:
 
-Tests:
+```text
+gradients for selected forward inputs
+```
 
-- deterministic equality/hash;
-- different shape != same signature;
-- different dtype !=;
-- different device !=;
-- different requires_grad !=;
-- grad-mode difference !=.
+This makes the forward/backward ABI visible.
 
 ---
 
-# 3.4 v0.12.2 — Guard abstraction
+## 3.5 v0.13.3 — Tensor-producing VJP formulas
 
-A Guard should answer:
+Current eager backward formulas largely operate on NumPy arrays.
 
-```text
-Does this runtime call still satisfy one captured assumption?
-```
+A graph-producing differentiation system needs formulas expressible as logical Tensor operations.
 
-Possible base shape:
-
-```python
-class Guard:
-    def check(context) -> GuardResult:
-        ...
-```
-
-`GuardResult` should be inspectable:
+Begin with a small op set:
 
 ```text
-passed
-reason
-expected
-actual
+aten::add.Tensor
+aten::mul.Tensor
+aten::matmul.default
+aten::relu.default
+aten::sum.default
 ```
 
-Suggested guard types:
+Create an educational VJP registry:
 
 ```text
-TensorShapeGuard
-TensorDTypeGuard
-TensorDeviceGuard
-RequiresGradGuard
-GradModeGuard
+operator
+   ↓
+Graph VJP rule
 ```
 
-Alternative: one structured TensorSignature guard is acceptable if individual failure reasons remain visible.
-
-Important rule:
-
-```text
-guard failure
-≠ exception in normal compiled wrapper execution
-```
-
-A normal guard failure usually means:
-
-```text
-cache miss → capture another specialization
-```
-
-Errors should be reserved for malformed internal state.
+Do not put AOT rules into backend kernels.
 
 ---
 
-# 3.5 v0.12.3 — GuardSet
+## 3.6 v0.13.4 — Reverse graph construction
 
-Group guards associated with one cached Graph:
+Process forward nodes in reverse topological order.
+
+Conceptually:
 
 ```text
-GuardSet
-├── input guards
-└── execution-policy guards
+forward:
+%z = mul(%x, %y)
+%o = sum(%z)
+
+backward seed:
+d%o
+
+reverse:
+d%z = expand_like(d%o, %z)
+d%x = mul(d%z, %y)
+d%y = mul(d%z, %x)
 ```
+
+Gradient contributions to shared values must accumulate explicitly in the backward Graph.
+
+---
+
+## 3.7 v0.13.5 — Saved forward values
+
+Backward formulas may need original forward values.
+
+Examples:
+
+```text
+mul backward needs x and y
+matmul backward needs operands
+relu backward needs activation mask/input
+```
+
+Determine which forward Values must cross the forward/backward boundary.
+
+Expose them explicitly instead of hiding them in Python `Context`.
+
+Possible result:
+
+```text
+AOTProgram
+├── forward_graph
+├── backward_graph
+├── user_output_ids
+├── saved_value_ids
+└── grad_input_ids
+```
+
+---
+
+## 3.8 v0.13.6 — Forward executor with saved outputs
+
+AOT forward execution should return:
+
+```text
+user outputs
++
+saved forward values
+```
+
+without exposing saved values as user-facing outputs.
+
+A small executor wrapper may bind requested internal Value ids while replaying the forward graph.
+
+Do not duplicate backend kernels.
+
+---
+
+## 3.9 v0.13.7 — Backward executor
 
 Possible API:
 
 ```python
-result = guard_set.check(*runtime_inputs)
+program = differentiate_graph(graph)
+run = AOTInterpreter(program)
+
+outputs, ctx = run.forward(*inputs)
+grads = run.backward(ctx, *grad_outputs)
 ```
 
-Result should explain all or first failure.
-
-Expose a deterministic textual form for education/debugging:
-
-```text
-input[0].shape == (2, 4)
-input[0].dtype == float64
-input[0].device == cpu
-grad_enabled == True
-```
-
-Do not hide guard logic inside opaque lambda closures.
+The backward path should execute through existing logical operators/Dispatcher where possible.
 
 ---
 
-# 3.6 v0.12.4 — Graph cache entry
+## 3.10 v0.13.8 — Eager reference equivalence
 
-Introduce a cache entry containing:
-
-```text
-GraphCacheEntry
-├── graph
-├── guards/signature
-├── compile_id
-├── hit_count
-└── metadata
-```
-
-A callable may own multiple specializations:
+Central correctness experiment:
 
 ```text
-fn
-├── entry 0: shape=(2,4), CPU, grad=True
-├── entry 1: shape=(8,4), CPU, grad=True
-└── entry 2: shape=(2,4), EDU, grad=True
+same function
+same inputs
+
+Path A:
+eager forward
+→ AutogradEngine.backward
+→ eager grads
+
+Path B:
+forward Graph
+→ AOT forward saved values
+→ backward Graph
+→ AOT grads
 ```
 
-This is the key mental transition from:
+Require:
 
 ```text
-one function → one graph
+outputs_A == outputs_B
+grads_A   == grads_B
 ```
 
-to:
-
-```text
-one function → potentially many guarded graph specializations
-```
+Test CPU and EDU for the supported op subset.
 
 ---
 
-# 3.7 v0.12.5 — GraphCache lookup
+## 3.11 v0.13.9 — Shared-subgraph gradient accumulation
 
-Create an ordered cache:
+Use a graph like:
 
 ```python
-GraphCache.lookup(runtime_signature)
+shared = x * x
+out = (shared + shared).sum()
 ```
 
-For the educational implementation, deterministic linear search is preferable to premature hashing complexity.
+Backward Graph must accumulate the two contributions before propagating through `mul`.
 
-Lookup semantics:
-
-```text
-for entry in entries:
-    evaluate guards
-    if pass:
-        hit
-
-otherwise:
-    miss
-```
-
-Expose counters:
-
-```text
-hits
-misses
-compiles
-entries
-```
-
-Tests:
-
-- first call miss;
-- identical second call hit;
-- signature change miss;
-- original signature later hits original entry;
-- counter correctness.
+This is the graph-level counterpart of the eager AutogradEngine shared-node test.
 
 ---
 
-# 3.8 v0.12.6 — CompiledFunction wrapper
+## 3.12 v0.13.10 — Failure semantics
 
-Introduce a user-facing educational wrapper, e.g.:
+Fail clearly for:
 
-```python
-compiled = compile(fn)
-```
+- unsupported operator VJP;
+- non-scalar output without supplied grad output;
+- malformed saved-value bindings;
+- unsupported output structure;
+- incompatible grad-output shape/device.
 
-or to avoid shadowing Python built-in:
+Do not silently fall back inside a partially built backward Graph.
 
-```python
-compiled = compile_graph(fn)
-```
+---
 
-Call behavior:
+## 3.13 Higher-order gradient boundary
+
+Do **not** claim general higher-order gradients merely because backward is represented as a Graph.
+
+Higher-order support requires:
 
 ```text
-compiled(*inputs)
+backward Graph execution
       ↓
-make runtime signature
+produces differentiable Tensor graph
       ↓
-cache lookup
-      ↓
-HIT?
- ├── yes → GraphInterpreter(entry.graph)
- └── no  → capture(fn, *inputs)
-           create GuardSet
-           store entry
-           return eager trace output
+that graph itself satisfies differentiation rules
 ```
 
-The miss path should return the eager output already produced during capture, avoiding an unnecessary immediate second execution.
+Treat that as a later explicit milestone unless fully validated.
 
 ---
 
-# 3.9 v0.12.7 — Recompile semantics
-
-A new specialization should increase an explicit compile/recompile count.
-
-Example:
-
-```text
-call 1: shape (2,4) → compile_id 0
-call 2: shape (2,4) → hit 0
-call 3: shape (8,4) → compile_id 1
-call 4: shape (2,4) → hit 0
-```
-
-Expose something like:
-
-```python
-compiled.stats()
-```
-
-returning:
-
-```text
-cache_entries
-compile_count
-hit_count
-miss_count
-```
-
-This makes recompilation visible rather than magical.
-
----
-
-# 3.10 v0.12.8 — Explain cache decisions
-
-Add an educational debug surface:
-
-```python
-compiled.explain(*inputs)
-```
-
-Possible output:
-
-```text
-entry 0: FAIL
-  input[0].shape expected (2,4), actual (8,4)
-
-entry 1: PASS
-```
-
-or an equivalent structured object.
-
-This is important because guard systems are useful only if users can understand why a graph did or did not match.
-
----
-
-# 3.11 v0.12.9 — Grad mode specialization
-
-Explicitly test the v0.11 principle that Graph IR stores logical operators while runtime policy remains dynamic.
-
-There are two defensible educational policies:
-
-### Policy A — guard grad mode
-
-```text
-capture under grad-enabled
-→ replay only under same grad-mode specialization
-```
-
-### Policy B — do not guard grad mode
-
-because Dispatcher replay can choose Autograd/NoGrad dynamically.
-
-For v0.12, choose one policy deliberately and document why.
-
-Recommended first implementation: **include grad mode in signature** because it makes specialization assumptions visible and parallels the idea that compiler/runtime behavior may depend on execution context.
-
-Do not claim this exactly reproduces every PyTorch Dynamo guard.
-
----
-
-# 3.12 v0.12.10 — Constants and closure policy
-
-v0.11 captures pre-existing leaf Tensor constants by value.
-
-v0.12 must explicitly decide cache validity when the original closure Tensor later changes.
-
-Simplest safe policy:
-
-```text
-captured Tensor constant value is frozen into the Graph
-```
-
-Therefore later mutation of the original Python Tensor does not invalidate the entry because the graph is explicitly value-captured.
-
-Document this as a limitation rather than pretending the graph tracks live Module state.
-
-Full Parameter/module mutation guards belong to a later Module-lifting compiler milestone if added.
-
----
-
-# 3.13 v0.12.11 — GraphBreak interaction
-
-If capture fails with `GraphBreakError`, the compiled wrapper must not insert a corrupt/partial Graph into cache.
-
-Required behavior:
-
-```text
-cache miss
-   ↓
-capture
-   ↓
-GraphBreakError
-   ↓
-no cache insertion
-```
-
-For the first educational version, propagating GraphBreakError is acceptable.
-
-Optional later policy:
-
-```text
-fallback eager execution
-```
-
-but do not silently change behavior without explicit docs/tests.
-
----
-
-# 3.14 v0.12.12 — Core integration proof
-
-Create a deterministic function:
-
-```python
-def fn(x, y):
-    return ((x * y) + x).relu().sum()
-```
-
-Run:
-
-```text
-Call A1: shape S1
-→ miss / compile graph 0
-
-Call A2: shape S1
-→ hit graph 0
-
-Call B1: shape S2
-→ miss / compile graph 1
-
-Call A3: shape S1
-→ hit graph 0
-```
-
-Verify:
-
-```text
-all outputs == eager reference
-all input grads == eager reference
-compile_count == 2
-cache entries == 2
-hits/misses correct
-```
-
-Also repeat for CPU/EDU specialization as appropriate.
-
----
-
-# 3.15 v0.12 tests
-
-Minimum test families:
-
-### Signature / Guard
-
-- shape change;
-- dtype change;
-- device change;
-- requires-grad change;
-- grad-mode change;
-- deterministic representation;
-- failure explanations.
-
-### Cache
-
-- cold miss;
-- warm hit;
-- multiple specializations;
-- return to previous specialization;
-- stats;
-- no insertion after failed capture.
-
-### Semantics
-
-- eager vs cached replay output;
-- eager vs cached replay gradients;
+## 3.14 v0.13 tests
+
+Minimum families:
+
+### Differentiation metadata
+- input/output role selection;
+- deterministic saved-value ordering.
+
+### VJP rules
+- add;
+- mul;
+- matmul;
+- relu;
+- sum.
+
+### Integration
+- forward output equality;
+- eager vs AOT input gradients;
+- shared-node accumulation;
 - CPU / EDU;
-- NoGrad policy;
-- Tensor constants;
-- historical 176 tests stay green.
+- graph cache specialization feeding AOT program as appropriate.
+
+### Failure
+- unsupported op;
+- bad grad seed;
+- missing saved values.
+
+Historical **192 tests** must remain green.
 
 ---
 
-# 3.16 v0.12 Definition of Done
+## 3.15 v0.13 Definition of Done
 
-v0.12 is complete when:
+v0.13 is complete when:
 
-- runtime signature model is explicit;
-- Guard/GuardSet is inspectable;
-- GraphCache stores multiple specializations;
-- compiled wrapper distinguishes hit/miss;
-- recapture happens on guard miss;
-- stats and explainability exist;
-- GraphBreak cannot poison cache;
-- eager/cached forward and backward equivalence pass;
-- README/version.md/Agents.md/docs/example updated;
-- exact final branch-head CI is green;
-- frozen v0.12 is integrated into `main`.
+- forward/backward graph ABI is explicit;
+- small VJP registry exists;
+- backward Graph is inspectable;
+- saved forward values are explicit;
+- AOT forward/backward executor exists;
+- eager-vs-AOT outputs/grads match;
+- shared-node accumulation works;
+- CPU/EDU tests pass;
+- docs/example/version README updated;
+- exact final branch-head CI green;
+- frozen v0.13 integrated into main.
 
 ---
 
 # 4. Future milestones
 
-## v0.13 — AOTAutograd-like Graph Differentiation
-
-Central question:
-
-> Can backward itself become explicit graph data instead of opaque Python/NumPy VJP execution?
-
-Target concepts:
-
-```text
-captured forward Graph
-      ↓
-functionalized differentiable representation
-      ↓
-forward graph + backward graph
-```
-
-Likely work:
-
-- Tensor-producing backward formulas;
-- explicit gradient graph Values;
-- saved forward intermediates as graph interface;
-- forward/backward graph partition;
-- reference equivalence with eager AutogradEngine.
-
-Do not begin before graph specialization/cache semantics are stable.
-
 ## v0.14 — Lowering / Fusion / Inductor-like Concepts
-
-Central question:
-
-> Once we have explicit graph programs, how can high-level operators be transformed into fewer lower-level computations?
-
-Target concepts:
 
 ```text
 Graph IR
@@ -874,11 +507,11 @@ lowered loop/tensor IR
 reference executor
 ```
 
-Possible educational transformations:
+Potential transformations:
 
-- pointwise op fusion;
+- pointwise fusion;
 - dead-value elimination;
-- constant folding where semantically safe;
+- safe constant folding;
 - simple matmul/pointwise lowering;
 - tiny generated Python/NumPy kernel representation.
 
@@ -888,18 +521,15 @@ No production Triton claim.
 
 Potential topics:
 
-- allocator/pool concepts;
 - execution planning;
 - graph memory lifetime;
 - preallocation/reuse;
+- allocator/pool concepts;
 - asynchronous work abstraction;
 - profiling;
-- dispatch/capture/cache timing;
-- performance comparison of eager vs interpreted vs fused paths.
+- eager vs interpreted vs fused timing.
 
 ## v1.0 — Integrated Architecture
-
-Final educational architecture should connect:
 
 ```text
 Tensor / Storage
@@ -923,15 +553,11 @@ AOTAutograd-like
 Lowering / Fusion
 ```
 
-v1.0 is not “feature parity with PyTorch”.
-
-It means:
-
-> the major architectural boundaries can be followed end-to-end in a small readable codebase, and each version branch preserves the point at which one more layer stopped being magic.
+v1.0 means the major architectural boundaries can be followed end-to-end in a small readable codebase; it does not mean feature parity with PyTorch.
 
 ---
 
-# 5. Version governance checklist
+# 5. Version governance
 
 Every future `vX.Y` must contain:
 
@@ -944,26 +570,6 @@ relevant example
 tests
 ```
 
-Freeze only after:
-
-```text
-exact version-branch HEAD
-      ↓
-GitHub Actions
-      ↓
-full regression green
-```
-
-Then:
-
-```text
-freeze branch
-      ↓
-integrate into main
-      ↓
-restore canonical main docs
-      ↓
-advance Plan.md
-```
+Freeze only after exact version-branch HEAD passes GitHub Actions, then integrate into main and advance the roadmap.
 
 `main` must never intentionally remain behind a newer validated version branch.
