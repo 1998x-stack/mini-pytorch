@@ -1,25 +1,45 @@
 # Branch Validation Matrix
 
-This matrix is maintained during the post-v1.0 deep review. The exact branch-local GitHub Actions run remains the source of truth for each snapshot.
+This matrix records the completed post-v1.0 repository review. Every version branch was validated on its **current exact HEAD** with its own branch-local GitHub Actions workflow; a newer branch passing was never used as a substitute for an older snapshot.
 
-| Branch | Role | Validation expectation |
-| --- | --- | --- |
-| `v0.1` | Tensor / Autograd / Module / basic Optimizer | branch-local unit suite |
-| `v0.2` | Optimizer family + scheduler | branch-local unit suite |
-| `v0.3` | Data pipeline + classification | branch-local unit suite |
-| `v0.4` | Storage / stride / views | branch-local unit suite |
-| `v0.5` | Dispatcher | branch-local unit suite |
-| `v0.6` | CNN stack | branch-local unit suite |
-| `v0.7` | Device/backend | branch-local unit suite |
-| `v0.8` | Advanced Autograd | branch-local unit suite |
-| `v0.9` | Checkpoint/RNG/runtime | branch-local unit suite |
-| `v0.10` | Distributed/DDP concepts | branch-local unit suite |
-| `v0.11` | Graph IR/capture | branch-local unit suite |
-| `v0.12` | Guards/cache | branch-local unit suite |
-| `v0.13` | AOT Autograd | branch-local unit suite |
-| `v0.14` | Lowering/fusion | branch-local unit suite |
-| `v0.15` | Runtime/performance planning | branch-local unit suite |
-| `v1.0` | Integrated architecture frozen snapshot | unit suite + integrated example |
-| `main` | newest validated integrated state | unit suite + integrated example |
+CI maintenance performed during the review:
 
-Historical branches may receive CI-only maintenance so their current HEAD can be revalidated on current Actions runtimes. Their framework scope must remain frozen.
+- `v0.1`–`v0.3` received branch-local test workflows because their current snapshot HEADs previously had no runnable Actions gate;
+- existing workflows on later branches were refreshed to current Node-based GitHub Actions (`actions/checkout@v7`, `actions/setup-python@v7`);
+- `v0.3` governance was corrected from `active/finalizing` to a frozen historical learning snapshot;
+- framework scope on frozen branches was not expanded.
+
+## Exact-head validation results
+
+| Branch | Current reviewed HEAD | Milestone | Result |
+| --- | --- | --- | --- |
+| `v0.1` | `8d40cc8a` | Tensor / Autograd / Module / basic Optimizer | ✅ exact-head CI success |
+| `v0.2` | `5c0819c2` | Optimizer family + scheduler | ✅ exact-head CI success |
+| `v0.3` | `ab14d9f6` | Data pipeline + classification | ✅ exact-head CI success |
+| `v0.4` | `d5571a25` | Storage / stride / views | ✅ exact-head CI success |
+| `v0.5` | `4a6a545b` | Dispatcher | ✅ exact-head CI success |
+| `v0.6` | `498b15c2` | CNN stack | ✅ exact-head CI success |
+| `v0.7` | `aaa51f1a` | Device / backend | ✅ exact-head CI success |
+| `v0.8` | `f07652a6` | Advanced Autograd | ✅ exact-head CI success |
+| `v0.9` | `cb2fe548` | Checkpoint / RNG / runtime | ✅ exact-head CI success |
+| `v0.10` | `ba5a846c` | Distributed / DDP concepts | ✅ exact-head CI success |
+| `v0.11` | `79686191` | Graph IR / capture | ✅ exact-head CI success |
+| `v0.12` | `4fb602ef` | Guards / graph cache | ✅ exact-head CI success |
+| `v0.13` | `2d4fab6c` | AOT Autograd | ✅ exact-head CI success |
+| `v0.14` | `93dbc6d6` | Analysis / lowering / fusion | ✅ exact-head CI success |
+| `v0.15` | `d0994168` | Runtime / performance planning | ✅ exact-head CI success |
+| `v1.0` | `d28ad884` | Frozen integrated architecture | ✅ exact-head CI success |
+| `main` | `28a9071d` | Post-v1.0 reviewed integrated state | ✅ **292/292 tests + integrated example PASS** |
+
+The full main validation commands are:
+
+```bash
+python -m unittest discover -s tests -v
+python examples/19_integrated_architecture.py
+```
+
+## Interpretation
+
+A green row means the snapshot represented by that branch remains internally coherent under its own historical contract. It does **not** mean older branches contain later fixes or later subsystems. Correctness hardening discovered after v1.0 is integrated into `main`; frozen branches receive only scope-preserving maintenance when justified.
+
+The detailed correctness findings and intentionally retained limits are documented in [`REVIEW_FINDINGS.md`](REVIEW_FINDINGS.md).
