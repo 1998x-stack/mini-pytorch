@@ -30,6 +30,14 @@ class RMSprop(Optimizer):
         if not isinstance(group["centered"], (bool, np.bool_)):
             raise TypeError("centered must be bool")
 
+    def _validate_param_state(self, parameter, values, *, group, index) -> None:
+        expected = {"square_avg"}
+        if group["momentum"] > 0:
+            expected.add("momentum_buffer")
+        if group["centered"]:
+            expected.add("grad_avg")
+        self._require_state_keys(values, expected, index=index)
+
     def step(self) -> None:
         for group in self.param_groups:
             lr, alpha, eps = group["lr"], group["alpha"], group["eps"]

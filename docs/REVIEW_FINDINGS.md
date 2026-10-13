@@ -16,6 +16,7 @@ This document records the post-v1.0 maintenance review. It distinguishes correct
 - Zero-size Tensor/view operations preserve explicit Storage identity; empty transpose/slice/view semantics no longer fall through NumPy's `shares_memory=False` behavior for zero-byte arrays.
 - Optimizer checkpoint loading is transactional and fail-fast: unknown parameter-state indices and wrong-shaped per-parameter ndarray state are rejected before current optimizer options/state are mutated.
 - Built-in Optimizers now validate every fully-normalized parameter group, so constructor group overrides, later `add_param_group()` calls, and checkpoint-restored group options cannot bypass algorithm constraints such as non-negative LR/weight decay, valid beta/alpha ranges, positive epsilon, or SGD Nesterov requirements.
+- Optimizer checkpoints must include every algorithm option defined by the optimizer defaults, while scheduler-added metadata such as `initial_lr` remains allowed. Existing per-parameter state entries are validated against the optimizer-specific schema (including conditional SGD/RMSprop state and non-negative integer step metadata), so missing or unexpected state fields fail during restore rather than during a later `step()`.
 
 ## Review candidates investigated but not treated as bugs
 

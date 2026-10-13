@@ -30,6 +30,10 @@ class Adamax(Optimizer):
         if group["weight_decay"] < 0:
             raise ValueError("weight_decay must be non-negative")
 
+    def _validate_param_state(self, parameter, values, *, group, index) -> None:
+        self._require_state_keys(values, {"step", "exp_avg", "exp_inf"}, index=index)
+        self._validate_step_value(values["step"], index=index)
+
     def step(self) -> None:
         for group in self.param_groups:
             lr, eps, weight_decay = group["lr"], group["eps"], group["weight_decay"]
