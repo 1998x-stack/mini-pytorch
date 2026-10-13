@@ -1,359 +1,285 @@
-# mini-pytorch v0.15 — Runtime / Performance Mechanics
+# mini-pytorch — Architecture-Driven PyTorch Learning Project
 
-> 在 v0.14 已经得到正确、可检查的 `LoweredProgram` 之后，v0.15 继续回答：runtime 如何**测量**执行、分析 Value 生命周期、规划 buffer、执行安全复用，并用可重复 benchmark 判断优化是否真的有收益？
+> 用可运行、可测试的 Python / NumPy 代码，从 Tensor/Autograd 一路拆到 Dispatcher、Backend、DDP、Graph Compiler、AOT backward、Lowering 与 Runtime Planning。
 
-**Branch:** `v0.15`  
-**Package:** `0.15.0`  
-**Previous:** `v0.14` Lowering / Fusion  
-**Validation baseline:** `247 / 247 tests passed` (release-candidate implementation)
+**Latest integrated version:** `v0.15.0`  
+**Current completed milestone:** Runtime / Performance Mechanics  
+**Next milestone:** `v1.0` Integrated Architecture
 
-## 1. 本版本核心差异
+mini-pytorch 的目标不是 PyTorch API feature parity，也不是性能复刻，而是把真实深度学习框架的关键架构边界拆成可以逐版本阅读的最小机制。
 
-v0.14：
+## 1. 版本学习地图
+
+| Version | 核心主题 | 验证基线 |
+|---|---|---:|
+| `v0.1` | Tensor / Dynamic Autograd | historical |
+| `v0.2` | Optimizer state / LR Scheduler | historical |
+| `v0.3` | Dataset / Sampler / DataLoader / MNIST | historical |
+| `v0.4` | Storage / stride / views / version safety | historical |
+| `v0.5` | Operator Registry / Dispatcher / Redispatch | 80 |
+| `v0.6` | CNN Operator Stack | 90 |
+| `v0.7` | Device / Backend | 103 |
+| `v0.8` | Advanced Autograd Engine | 123 |
+| `v0.9` | Training Runtime / Checkpoint / RNG | 140 |
+| `v0.10` | Distributed / DDP Concepts | 159 |
+| `v0.11` | Graph IR / Eager Capture | 176 |
+| `v0.12` | Guards / Graph Cache / Recompile | 192 |
+| `v0.13` | AOTAutograd-like Graph Differentiation | 206 |
+| `v0.14` | Lowering / Fusion / Inductor-like Concepts | 221 |
+| `v0.15` | Runtime / Performance Mechanics | **247** |
+
+## 2. 当前完整架构
 
 ```text
-Graph
-  ↓
-analysis / transforms / fusion
-  ↓
-LoweredProgram
-  ↓
-LoweredExecutor
-```
+Python API
+   ↓
+Tensor
+   ↓
+Storage + shape + stride + offset + Device
+   ↓
+logical operator
+   ↓
+Dispatcher
+   ├── Autograd / NoGrad policy
+   └── CPU / EDU backend
+          ↓
+        kernels
 
-v0.15：
+Tensor / GradFn
+   ↓
+AutogradEngine
 
-```text
+Module → Parameter → Optimizer → Scheduler
+Dataset → Sampler → DataLoader
+Runtime → RNG → Checkpoint
+DDP → Reducer → GradientBucket → ProcessGroup
+
+Python eager function
+   ↓
+Dispatcher-level Graph capture
+   ↓
+Value / Node / Graph
+   ↓
+InputSignature / GuardSet / GraphCache
+   ↓
+AOT differentiation
+   ├── forward Graph
+   └── backward Graph
+         ↑
+ saved Values + grad_output
+   ↓
+Graph analysis
+   ↓
+DCE / constant folding / fusion
+   ↓
 LoweredProgram
-      ↓
-benchmark + profiling
-      ↓
-Value lifetime analysis
-      ↓
-Buffer interval analysis
-      ↓
+   ├── ExternalOp
+   └── PointwiseFusion
+   ↓
+profiling / lifetime analysis
+   ↓
 MemoryPlan
-      ↓
+   ↓
 ExecutionPlan
-      ↓
+   ↓
 PlannedExecutor
 ```
 
-关键思想：
+## 3. v0.15 — compiler/runtime handoff
+
+v0.15 adds the final major mechanism before v1.0 consolidation:
+
+```python
+from mini_pytorch.compiler import (
+    build_execution_plan,
+    lower_graph,
+    PlannedExecutor,
+)
+
+lowered = lower_graph(graph)
+plan = build_execution_plan(lowered.program)
+out = PlannedExecutor(plan)(x, y)
+```
+
+The split is intentional:
 
 ```text
 LoweredProgram
-= what executes
+= what operations execute
 
 ExecutionPlan
 = how runtime resources are assigned
 ```
 
-## 2. Measurement before optimization
+v0.15 includes:
 
-新增：
+- reproducible benchmark primitives;
+- per-instruction profiling;
+- explicit Value lifetime analysis;
+- conservative pointwise temporary buffer reuse;
+- `BufferSpec / BufferInterval / BufferSlot / MemoryPlan`;
+- `ExecutionPlan`;
+- `PlannedExecutor`;
+- allocation/reuse/peak-live metrics;
+- AOT saved-value retention through planned forward/backward execution;
+- capture object-identity lifetime robustness.
 
-```python
-from mini_pytorch.compiler import BenchmarkConfig, benchmark
-
-report = benchmark(
-    fn,
-    config=BenchmarkConfig(
-        warmup=3,
-        repeats=10,
-        iterations_per_repeat=5,
-    ),
-)
-
-print(report.median_ms)
-print(report.mean_ms)
-```
-
-规则：
-
-- warmup 不进入 samples；
-- 每个 repeat 归一化成 per-iteration latency；
-- median 为主要摘要；
-- 同时暴露 mean/min/max；
-- unit tests **不使用绝对速度阈值**；
-- benchmark 结果是 evidence，不是 correctness oracle。
-
-## 3. Per-instruction profiling
-
-```python
-profiled = profile_lowered(lowered.program, x, y)
-print(profiled.profile.format())
-```
-
-每个 `ExecutionEvent` 包含：
+Validation:
 
 ```text
-instruction_index
-instruction_kind
-label
-input Value ids
-output Value ids
-elapsed_ns
+247 / 247 tests passed
 ```
 
-`ExternalOp` 与 `PointwiseFusion` 会分别显示。
+## 4. Correctness stack
 
-## 4. Value lifetime
-
-粗粒度 lowered-instruction lifetime：
+The project now has multiple independent reference levels:
 
 ```text
-ValueLifetime
-├── birth_instruction
-├── last_use_instruction
-├── input / constant / output / retained flags
-├── shape
-├── dtype
-└── device
+Eager Tensor execution
+      ↓ reference
+GraphInterpreter
+      ↓ reference
+LoweredExecutor
+      ↓ reference
+PlannedExecutor
 ```
 
-约定：
+For gradients:
 
 ```text
-input / constant birth = -1
-Graph output last_use = instruction_count
-AOT saved/retained Value last_use = instruction_count
-```
-
-因此 runtime 不会在 backward 仍需要 forward saved Value 时提前回收它。
-
-## 5. Buffer planning
-
-新增：
-
-```text
-BufferSpec
-BufferInterval
-BufferSlot
-MemoryPlan
-```
-
-v0.15 的 reuse 很保守。只有同时满足以下条件的 `PointwiseFusion` 临时值才可能进入 reusable slot：
-
-```text
-producer 属于 pointwise fusion
-不是 graph output
-不是 retained/AOT saved value
-shape 完全相同
-dtype 完全相同
-device 完全相同
-lifetime 不重叠
-```
-
-暂时不会复用：
-
-```text
-user input
-constant
-Graph output
-retained saved Value
-ExternalOp output
-```
-
-这不是 production allocator，而是一个可以逐行检查的 greedy educational buffer planner。
-
-## 6. ExecutionPlan
-
-```python
-plan = build_execution_plan(
-    lowered.program,
-    retained_value_ids=saved_ids,
-)
-
-print(plan.format())
-```
-
-结构：
-
-```text
-ExecutionPlan
-├── LoweredProgram
-├── ValueLifetimeAnalysis
-├── MemoryPlan
-│   ├── BufferInterval[]
-│   ├── BufferSlot[]
-│   └── value → slot
-├── ExecutionStep[]
-└── release-after-node schedule
-```
-
-Memory metrics：
-
-```text
-logical reusable Value count
-physical slot count
-reuse_count
-naive_allocation_bytes
-planned_buffer_bytes
-bytes_avoided_by_reuse
-peak_eligible_live_bytes
-```
-
-这些是**结构/内存模型指标**，与 wall-clock latency 分开报告。
-
-## 7. PlannedExecutor
-
-```python
-planned = PlannedExecutor(plan)
-out = planned(x, y)
-```
-
-执行原则：
-
-```text
-PointwiseFusion
-→ 可写入预分配 Storage slot
-
-ExternalOp
-→ 继续通过 Dispatcher
-```
-
-也就是说 v0.15 没有为了 buffer reuse 绕开 Dispatcher 或重写 matmul/sum 等 kernel。
-
-每次 executor call 都创建独立 slot pool，所以一次运行返回的 Tensor 不会因为下一次运行复用 slot 而被覆盖。
-
-## 8. AOT forward/backward 集成
-
-v0.13/v0.14 的 saved-value ABI 继续成立：
-
-```text
-AOT forward Graph
-      ↓
-lower_graph
-      ↓
-map source saved Value ids
-      ↓
-build_execution_plan(retained=saved ids)
-      ↓
-PlannedExecutor.run_with_values
-      ↓
-saved Values
-      ↓
+eager AutogradEngine
+      ==
+AOT explicit backward Graph
+      ==
+lowered backward Graph
+      ==
 planned backward Graph
-      ↓
-input gradients
 ```
 
-验证链：
+Optimization layers do not replace the older reference layers; they are checked against them.
+
+## 5. Performance philosophy
+
+mini-pytorch does not infer speed from representation changes.
 
 ```text
-eager Autograd gradients
-      ==
-AOT reference gradients
-      ==
-lowered backward gradients
-      ==
-planned backward gradients
+fusion count ↓
+allocation count ↓
+instruction count ↓
 ```
 
-## 9. Capture identity robustness fix
+are structural facts, not latency guarantees.
 
-v0.15 的长表达式/大量临时 Tensor 测试暴露了一个 inherited compiler bug：旧 capture 只保存 `id(tensor) → Value`，短生命周期 Tensor 被 GC 后 Python 可能复用同一个 object id，导致两个不同 eager temporary 被错误映射为同一 Graph Value。
-
-现在 capture session 在 capture 生命周期内保存强引用，并要求：
+Performance discussions require:
 
 ```text
-same Python id
-+
-object identity is the same object
+warmup
+repeated measurements
+median / distribution
+same workload
+separate planning and steady-state timing
+allocation metrics reported separately from wall clock
 ```
 
-才能复用 Graph Value。
-
-这保证一个 Graph Value 不会出现多个 producer。
-
-## 10. 推荐阅读顺序
-
-```text
-mini_pytorch/compiler/benchmark.py
-      ↓
-mini_pytorch/compiler/profiler.py
-      ↓
-mini_pytorch/compiler/runtime_analysis.py
-      ↓
-mini_pytorch/compiler/execution_plan.py
-      ↓
-tests/test_runtime_performance.py
-      ↓
-tests/test_execution_plan.py
-      ↓
-docs/RUNTIME_PERFORMANCE.md
-      ↓
-examples/18_runtime_performance.py
-```
-
-同时可对照：
-
-```text
-v0.14 lowering.py
-      ↓
-v0.15 execution_plan.py
-```
-
-理解 compiler/runtime handoff。
-
-## 11. Quick run
+Run:
 
 ```bash
 python examples/18_runtime_performance.py
+```
+
+The example compares:
+
+```text
+Eager
+GraphInterpreter
+LoweredExecutor
+PlannedExecutor
+```
+
+without asserting which one must be fastest.
+
+## 6. Recommended compiler/runtime reading path
+
+```text
+compiler/ir.py
+   ↓
+compiler/capture.py
+   ↓
+compiler/guards.py + cache.py + compiled.py
+   ↓
+compiler/aot.py
+   ↓
+compiler/analysis.py
+   ↓
+compiler/lowering.py
+   ↓
+compiler/benchmark.py
+   ↓
+compiler/profiler.py
+   ↓
+compiler/runtime_analysis.py
+   ↓
+compiler/execution_plan.py
+```
+
+## 7. Full quick validation
+
+```bash
 python -m unittest discover -s tests -v
 ```
 
-## 12. 明确非目标
-
-v0.15 不实现：
-
-- production caching allocator；
-- CUDA/Triton/C++ codegen；
-- GPU benchmark；
-- async streams/events；
-- multithreaded scheduler；
-- symbolic-shape memory planner；
-- arbitrary alias/mutation optimization；
-- benchmark cherry-picking；
-- “一定比 eager 更快”的结论。
-
-## 13. 从 v0.1 到 v0.15
+Current integrated baseline:
 
 ```text
-v0.1   Dynamic Autograd
-  ↓
-v0.2   Optimizer / Scheduler
-  ↓
-v0.3   DataLoader
-  ↓
-v0.4   Storage / Views
-  ↓
-v0.5   Dispatcher
-  ↓
-v0.6   CNN operators
-  ↓
-v0.7   Device / Backend
-  ↓
-v0.8   Autograd Engine
-  ↓
-v0.9   Training Runtime
-  ↓
-v0.10  DDP
-  ↓
-v0.11  Graph IR
-  ↓
-v0.12  Guards / Cache
-  ↓
-v0.13  AOT backward Graph
-  ↓
-v0.14  Lowering / Fusion
-  ↓
-v0.15  Runtime / Performance Mechanics
-  ↓
-v1.0   Integrated Architecture
+247 tests
+OK
 ```
 
-## 14. Next
+## 8. Historical branch rule
 
-v0.15 完成后不再继续堆新大机制，下一阶段进入 **v1.0 Integrated Architecture**：统一架构文档、端到端学习路径、API consistency、完整示例与最终 release snapshot。
+Each `v0.x` branch is a learning snapshot. Read that branch's:
+
+```text
+Agents.md
+version.md
+README.md
+```
+
+before studying the code. Future development starts from latest `main`, not from a frozen historical branch.
+
+## 9. Next — v1.0 Integrated Architecture
+
+The project now has all major mechanisms planned for the 0.x learning sequence. v1.0 should **consolidate rather than expand**.
+
+Target work:
+
+```text
+architecture audit
+      ↓
+API / naming consistency
+      ↓
+end-to-end integrated example
+      ↓
+PyTorch subsystem mapping
+      ↓
+documentation consistency
+      ↓
+final regression / release snapshot
+```
+
+v1.0 is successful when a reader can start from a Tensor expression and trace, in one coherent map, how it reaches:
+
+```text
+Storage
+Dispatcher
+Backend
+Autograd
+Module / Optimizer / Data
+Runtime / Checkpoint / DDP
+Graph capture / Guards
+AOT backward
+Lowering / Fusion
+ExecutionPlan / Buffer reuse
+```
+
+without needing a new major subsystem.
