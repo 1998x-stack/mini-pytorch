@@ -1,17 +1,16 @@
-# Agents.md — mini-pytorch v0.15 Development Contract
+# Agents.md — mini-pytorch v0.15 Frozen Snapshot Contract
 
-> Read before modifying branch `v0.15`.
+> Branch `v0.15` is frozen. Read this file before making any historical correction.
 
 ## Branch identity
 
 - Branch: `v0.15`
 - Previous: `v0.14`
 - Theme: Runtime / Performance Mechanics
-- Status: release candidate until exact final-head CI passes
-- Starting baseline: 221 tests
-- Current validated implementation baseline: 247 tests
+- Status: **frozen historical learning snapshot**
+- Frozen validation baseline: **247 tests / OK**
 
-## Required dependency order
+## Frozen dependency chain
 
 ```text
 LoweredProgram
@@ -29,216 +28,136 @@ PlannedExecutor
 benchmark evidence
 ```
 
-Do not make performance claims before measurement and resource semantics are explicit.
+## Preserved runtime invariants
 
-## Measurement contract
+### Measurement
 
-### Benchmarking
-
-- use a monotonic high-resolution timer;
-- warmup count is explicit and excluded;
-- repeats and iterations-per-repeat are explicit positive integers;
-- report per-iteration samples and median/mean/min/max;
-- do not use absolute speed thresholds in unit tests;
-- planning/capture/lowering time must remain distinguishable from steady-state execution;
-- a slower planned runtime is valid evidence and must not be hidden.
+- benchmark warmup is explicit and excluded;
+- repeats/iterations are explicit;
+- median/mean/min/max are inspectable;
+- no absolute speed threshold belongs in tests;
+- fewer instructions or fewer buffers is not automatically a speedup.
 
 ### Profiling
 
 - profiling is opt-in;
-- profiling does not change numerical results;
-- one event per `LoweredProgram` instruction;
-- instruction index/kind/label/input/output Value ids remain inspectable;
-- ordinary `LoweredExecutor` execution does not pay per-instruction timing overhead.
+- one event per lowered instruction;
+- event order/kind/Value ids remain inspectable;
+- profiling does not change numerical semantics.
 
-## Lifetime contract
+### Lifetime
 
-Two lifetime views intentionally coexist.
+- input/constant birth occurs before instruction 0;
+- Graph outputs survive the execution boundary;
+- AOT retained/saved Values survive the forward boundary;
+- fused internal Values remain visible in educational analysis.
 
-### Instruction-level
+### Buffer planning
 
-`ValueLifetimeAnalysis` describes lowered instruction boundaries.
-
-Rules:
-
-- input/constant birth = -1;
-- Graph outputs remain live through execution boundary;
-- retained/AOT saved Values remain live through execution boundary;
-- fused internal Values remain visible because the reference fusion path materializes them.
-
-### Node-level buffer interval
-
-`BufferInterval` describes optimized Graph node positions so reuse may be reasoned about inside one `PointwiseFusion`.
-
-No buffer reuse before last node-level use.
-
-## Buffer planning rules
-
-A reusable planner slot is allowed only when all are explicit:
+Reusable planner slots require all of:
 
 ```text
-producer belongs to PointwiseFusion
-not Graph output
-not retained/AOT saved Value
-exact shape equality
-exact dtype equality
-exact device equality
-non-overlapping lifetimes
+PointwiseFusion producer
+not graph output
+not retained/AOT saved
+exact shape
+exact dtype
+exact device
+non-overlapping lifetime
 ```
 
-The first algorithm is deterministic greedy reuse.
+Inputs, constants, outputs, retained Values and ExternalOp outputs are not silently assigned reusable planner slots.
 
-Never assign these to a reusable planner slot:
+### Planned execution
 
-- external inputs;
-- captured constants;
-- graph outputs;
-- retained forward Values;
-- ExternalOp outputs.
+- `PlannedExecutor` is first-order / no-grad;
+- only pointwise add/mul/relu use planner-owned `out=` destinations;
+- ExternalOps still execute through Dispatcher;
+- slot pools are fresh per executor call;
+- returned outputs cannot be overwritten by later calls;
+- explicitly requested internal Values must be retained in the plan.
 
-Buffer assignment is plan data, not hidden mutation.
-
-## PlannedExecutor rules
-
-- `PlannedExecutor` remains first-order and executes under no-grad semantics;
-- only add/mul/relu inside `PointwiseFusion` may currently use preallocated `out=` destinations;
-- `ExternalOp` always continues through Dispatcher;
-- a fresh physical slot pool is allocated for each executor call;
-- returned output from an earlier call must not alias a later call's slot pool;
-- explicitly requested intermediate Values must have been retained in the `ExecutionPlan`;
-- CPU/EDU placement must remain correct;
-- runtime metrics are inspectable separately from wall-clock timing.
-
-## AOT integration contract
-
-Forward planning must preserve every v0.13 saved Value required by backward.
-
-Required chain:
+### AOT integration
 
 ```text
 AOT source saved ids
       ↓
-LoweringResult.mapped_value_id
+source_to_lowered mapping
       ↓
-ExecutionPlan(retained lowered ids)
+retained ExecutionPlan Values
       ↓
-PlannedExecutor.run_with_values
+planned forward
       ↓
-planned backward executor
+planned backward
 ```
 
-Correctness oracle:
+Required correctness relation:
 
 ```text
 GraphInterpreter
-      ==
-LoweredExecutor
-      ==
-PlannedExecutor
+== LoweredExecutor
+== PlannedExecutor
 ```
 
 and:
 
 ```text
-eager Autograd gradients
-      ==
-AOT reference gradients
-      ==
-planned backward gradients
+eager gradients
+== AOT gradients
+== planned backward gradients
 ```
 
-## Capture identity invariant
+### Capture identity
 
-During an active capture, every observed Tensor object must remain strongly referenced by the session while object identity is used for the runtime mapping.
+Do not regress capture to a bare `id(tensor) -> Value` map without retaining object lifetime. During one active capture, observed Tensor objects must remain strongly referenced so Python object-id recycling cannot merge distinct intermediate Values.
 
-Do not regress to a bare:
+## Historical scope
 
-```text
-id(tensor) -> Value
-```
+Allowed changes on frozen `v0.15`:
 
-map without lifetime protection. Python object ids may be recycled after GC and can otherwise create multiple producer nodes for one Graph Value.
+- documentation corrections;
+- tests clarifying behavior already promised by v0.15;
+- narrow bug fixes strictly inside the v0.15 runtime/performance boundary.
 
-## Performance-reporting rules
+Do **not** add:
 
-- repeated samples, not single-shot timing;
-- median is the primary latency summary;
-- min/max/mean remain visible;
-- compare identical workload/input structure;
-- allocation/reuse/peak-live metrics are separate from wall-clock timing;
-- fewer instructions or fewer buffers is not itself a latency claim;
-- do not claim PyTorch performance parity.
+- new compiler/runtime subsystems;
+- CUDA/Triton codegen;
+- production allocator behavior;
+- symbolic-shape planning;
+- async/multithreaded scheduling;
+- v1.0 integration-only APIs.
 
-## Non-goals
+Future work starts from latest `main`, never from this frozen branch.
 
-- CUDA/Triton/C++ code generation;
-- GPU timing;
-- production caching allocator;
-- async streams/events;
-- multithreaded scheduler;
-- symbolic-shape planner;
-- arbitrary alias/mutation optimization;
-- production profiler;
-- benchmark cherry-picking.
-
-## Testing contract
-
-Required v0.15 tests cover:
-
-- benchmark validation/call counts/statistics;
-- profiler numerical equivalence and event structure;
-- instruction-level lifetimes;
-- AOT retained lifetime extension;
-- exact-spec non-overlapping slot reuse;
-- output/retained exclusion from reuse;
-- deterministic plan formatting;
-- PlannedExecutor CPU/EDU equivalence;
-- ExternalOp Dispatcher preservation;
-- cross-run slot-pool isolation;
-- planned runtime metrics;
-- planned AOT forward/backward equivalence;
-- capture object-id recycling regression;
-- all historical tests.
-
-Run:
+## Validation command
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-Current validated implementation result:
+Frozen baseline:
 
 ```text
 247 tests
 OK
 ```
 
-## Documentation contract
-
-Before freeze review:
+## Historical reading order
 
 ```text
-README.md
 version.md
-Agents.md
-MANIFEST.txt
+README.md
+mini_pytorch/compiler/benchmark.py
+mini_pytorch/compiler/profiler.py
+mini_pytorch/compiler/runtime_analysis.py
+mini_pytorch/compiler/execution_plan.py
+tests/test_runtime_performance.py
+tests/test_execution_plan.py
 docs/RUNTIME_PERFORMANCE.md
 examples/18_runtime_performance.py
 ```
 
-## Frozen branch rule
+## Next dependency
 
-After status becomes `frozen`, only documentation corrections, tests clarifying promised v0.15 behavior, or narrow fixes inside this version boundary are allowed. New architecture belongs in v1.0 or a later explicitly planned branch.
-
-## Definition of Done
-
-Freeze only after:
-
-- runtime measurement/lifetime/planning layers are complete;
-- PlannedExecutor and AOT integration proofs pass;
-- docs/example/manifest are complete;
-- exact release-candidate HEAD CI is green;
-- `version.md` and this file are switched to frozen;
-- exact frozen-head CI is green;
-- validated tree is integrated into `main`;
-- main canonical roadmap advances to v1.0.
+The next version is **v1.0 — Integrated Architecture** and must branch from the latest canonical `main`, not from frozen `v0.15`.

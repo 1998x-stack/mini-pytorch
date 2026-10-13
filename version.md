@@ -5,12 +5,12 @@
 - **Branch:** `v0.15`
 - **Previous version:** `v0.14`
 - **Theme:** Runtime / Performance Mechanics
-- **Status:** release candidate
+- **Status:** frozen historical learning snapshot
 - **Package version:** `0.15.0`
 - **Starting baseline:** 221 tests
-- **Current validated implementation baseline:** **247 / 247 tests passed**
+- **Frozen validation baseline:** **247 / 247 tests passed**
 
-v0.15 asks:
+v0.15 answers:
 
 > Once a correct `LoweredProgram` exists, how should runtime execution be measured, how long are Values live, how can temporary storage be safely reused, and how do we benchmark the result without making unsupported performance claims?
 
@@ -111,28 +111,13 @@ PlannedExecutor
 
 ### Compiler robustness fix
 
-v0.15 runtime stress tests exposed an inherited capture identity bug. A capture session previously stored only `id(tensor) -> Value`. Short-lived temporary Tensors could be garbage-collected and their Python object ids recycled, causing distinct intermediates to share one Graph Value and creating multiple producers.
+Runtime stress tests exposed an inherited capture identity bug. A capture session previously stored only `id(tensor) -> Value`. Short-lived temporary Tensors could be garbage-collected and their Python object ids recycled, causing distinct intermediates to share one Graph Value and creating multiple producers.
 
 Capture now keeps strong references to all observed Tensor objects for the full session and validates object identity with `is` before reusing a Value mapping.
 
 A dedicated regression test creates/deletes many short-lived temporaries and verifies unique producer Values.
 
-## What remains unchanged
-
-v0.15 does not change:
-
-- Tensor mathematical semantics;
-- Storage/view/version rules;
-- Dispatcher backend selection;
-- eager AutogradEngine;
-- Module/Optimizer/DataLoader behavior;
-- DDP semantics;
-- Graph capture logical-op boundary;
-- Guards/GraphCache specialization;
-- AOT VJP definitions;
-- v0.14 lowering/fusion legality rules.
-
-## Architecture
+## Frozen architecture
 
 ```text
 Python eager
@@ -163,8 +148,6 @@ PlannedExecutor
 ```
 
 ## Correctness proofs
-
-Required equality chain:
 
 ```text
 GraphInterpreter output
@@ -241,10 +224,10 @@ examples/18_runtime_performance.py
 
 ## Validation
 
-Validated implementation commit:
+Validated release-candidate commit:
 
 ```text
-517d89aee21156c8abc984e1d81abfbd79f4ba5c
+3d5d8b04e5931fa8dac3b8f37ff3a63a16e54980
 ```
 
 GitHub Actions environment:
@@ -262,7 +245,7 @@ Ran 247 tests
 OK
 ```
 
-The release-candidate documentation commit still requires its own exact-head CI before freeze.
+The frozen branch head differs only by this status/governance documentation and is required to pass its own exact-head CI before integration into `main`.
 
 ## Learning goals
 
@@ -293,22 +276,12 @@ After v0.15, the reader should be able to explain:
 - PyTorch performance parity;
 - claim that PlannedExecutor is always faster.
 
-## Definition of Done
+## Frozen-branch rule
 
-v0.15 freezes only after:
-
-- benchmark/profiling/lifetime layers are complete;
-- conservative MemoryPlan and ExecutionPlan exist;
-- PlannedExecutor matches references;
-- AOT saved Values and backward remain correct;
-- allocation/reuse/peak-live metrics are inspectable;
-- runtime benchmark example is included;
-- README/docs/MANIFEST are complete;
-- exact release-candidate HEAD CI is green;
-- branch is marked frozen;
-- exact frozen-head CI is green;
-- validated tree is fast-forwarded into main.
+Future major mechanisms do not belong on `v0.15`. Only documentation corrections, tests clarifying promised v0.15 behavior, or narrow fixes inside this version boundary are allowed.
 
 ## Next version
 
-After v0.15, the roadmap moves to **v1.0 — Integrated Architecture**. The focus shifts from adding major mechanisms to consolidation: architecture consistency, end-to-end examples, API cleanup, PyTorch subsystem mapping, and a final learning-oriented release snapshot.
+**v1.0 — Integrated Architecture**.
+
+The focus shifts from adding mechanisms to consolidation: architecture consistency, end-to-end examples, API cleanup, mapping to real PyTorch subsystems, and a final learning-oriented release snapshot.
