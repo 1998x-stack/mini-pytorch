@@ -226,7 +226,10 @@ class Tensor:
 
     @property
     def is_leaf(self) -> bool:
-        return self.requires_grad and self._grad_fn is None
+        # Leaf-ness describes autograd graph provenance, not whether gradients
+        # are requested. Tensors with requires_grad=False are leaves by
+        # convention when no operation created them with a grad_fn.
+        return self._grad_fn is None
 
     @property
     def retains_grad(self) -> bool:
