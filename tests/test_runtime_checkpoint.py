@@ -9,6 +9,7 @@ from mini_pytorch import (
     CheckpointError,
     Tensor,
     TrainingState,
+    __version__,
     get_rng_state,
     load_checkpoint,
     load_checkpoint_state,
@@ -186,7 +187,7 @@ class TestCheckpointSerialization(unittest.TestCase):
             document = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
             self.assertEqual(document["format"], "mini-pytorch-checkpoint")
             self.assertEqual(document["schema_version"], 1)
-            self.assertEqual(document["framework_version"], "0.9.0")
+            self.assertEqual(document["framework_version"], __version__)
             self.assertEqual(document["training_state"]["global_step"], 1)
 
             loaded = load_checkpoint_state(root)
