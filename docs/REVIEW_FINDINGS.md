@@ -13,6 +13,8 @@ This document records the post-v1.0 maintenance review. It distinguishes correct
 - transpose validates dimension bounds instead of wrapping arbitrary positive/negative indices modulo ndim.
 - Optimizer rejects a Parameter duplicated inside one parameter group instead of updating it twice and producing ambiguous checkpoint indices.
 - default_collate rejects heterogeneous or ragged tuple/list batches instead of silently truncating them through `zip`.
+- Zero-size Tensor/view operations preserve explicit Storage identity; empty transpose/slice/view semantics no longer fall through NumPy's `shares_memory=False` behavior for zero-byte arrays.
+- Optimizer checkpoint loading is transactional and fail-fast: unknown parameter-state indices and wrong-shaped per-parameter ndarray state are rejected before current optimizer options/state are mutated.
 
 ## Review candidates investigated but not treated as bugs
 
