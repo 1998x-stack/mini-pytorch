@@ -1,136 +1,104 @@
-# mini-pytorch — Architecture-Driven PyTorch Learning Project
+# mini-pytorch v0.14 — Lowering / Fusion / Inductor-like Concepts
 
-> 用可运行的 Python / NumPy 代码，沿着真实 PyTorch 的架构依赖逐层拆解 Tensor、Autograd、Dispatcher、Runtime、Distributed 与 Compiler。
+> 本版本专门研究：当 forward / backward 都已经是显式 Graph 后，如何把高层 logical Graph 转换成可分析、可优化、可融合、可执行的 lower-level program。
 
-**Latest integrated version:** `v0.14.0`  
-**Current milestone:** Lowering / Fusion / Inductor-like Concepts  
-**Next milestone:** `v0.15` Runtime / Performance Mechanics
+**Branch:** `v0.14`  
+**Previous:** `v0.13` AOTAutograd-like Graph Differentiation  
+**Package:** `0.14.0`
 
-mini-pytorch 不追求 PyTorch API feature parity，也不复制上游源码。项目重点是建立一条可运行、可测试、可逐版本回看的机制学习链。
+## 1. 核心变化
 
-## 1. 版本学习地图
-
-| Version | 核心主题 | 验证基线 |
-|---|---|---:|
-| `v0.1` | Tensor / Dynamic Autograd | historical |
-| `v0.2` | Optimizer state / LR Scheduler | historical |
-| `v0.3` | Dataset / Sampler / DataLoader / MNIST | historical |
-| `v0.4` | Storage / stride / views / version safety | historical |
-| `v0.5` | Operator Registry / Dispatcher / Redispatch | 80 |
-| `v0.6` | CNN Operator Stack | 90 |
-| `v0.7` | Device / Backend | 103 |
-| `v0.8` | Advanced Autograd Engine | 123 |
-| `v0.9` | Training Runtime / Checkpoint / RNG | 140 |
-| `v0.10` | Distributed / DDP Concepts | 159 |
-| `v0.11` | Graph IR / Eager Capture | 176 |
-| `v0.12` | Guards / Graph Cache / Recompile | 192 |
-| `v0.13` | AOTAutograd-like Graph Differentiation | 206 |
-| `v0.14` | Lowering / Fusion / Inductor-like Concepts | **221** |
-
-## 2. 当前完整依赖链
+v0.13 已经得到：
 
 ```text
-Tensor
+forward Graph
++
+backward Graph
+```
+
+v0.14 增加：
+
+```text
+Graph
   ↓
-Storage + shape + stride + offset + Device
+normalize_graph
   ↓
-logical operator
+analyze_graph
   ↓
-Dispatcher
-  ├── Autograd / NoGrad policy
-  └── CPU / EDU backend
-          ↓
-        kernel
-
-Tensor / GradFn → AutogradEngine
-
-Dataset → Sampler → BatchSampler → DataLoader
-Module → Parameter → Optimizer → Scheduler
-Runtime → RNG → Checkpoint
-DDP → Reducer → GradientBucket → ProcessGroup
-
-Python eager function
-      ↓
-Dispatcher capture
-      ↓
-Value / Node / Graph
-      ↓
-InputSignature / GuardSet / GraphCache
-      ↓
-GraphInterpreter
-      ↓
-AOT differentiation
-  ┌──────────────┴──────────────┐
-  ▼                             ▼
-forward Graph              backward Graph
-  │                             ▲
-  └── output + saved Values ────┘
-                                + grad_output
-
-forward/backward Graph
-      ↓
-normalize + analyze
-      ↓
-DCE + safe constant folding
-      ↓
-use-aware fusion planning
-      ↓
+DCE
+  ↓
+safe constant folding
+  ↓
+fusion planning
+  ↓
 LoweredProgram
-      ↓
+  ↓
 LoweredExecutor
 ```
 
-## 3. v0.14 核心
+`GraphInterpreter` 继续作为 reference executor。
 
-v0.14 第一次把“正确的 Graph”推进成“经过显式 compiler passes 的 lower-level execution plan”。
-
-```python
-from mini_pytorch.compiler import lower_graph, LoweredExecutor
-
-result = lower_graph(graph)
-print(result.optimized_graph.format())
-print(result.program.format())
-print(result.explain())
-
-out = LoweredExecutor(result.program)(x, y)
-```
-
-### Graph analysis
-
-```text
-ValueAnalysis
-├── producer_node_id
-├── user_node_ids
-├── use_count
-├── is_graph_output
-└── is_live
-```
-
-`use_count` 按真实 occurrence 计数，因此：
+## 2. 新增分析层
 
 ```python
-out = shared + shared
+from mini_pytorch.compiler import analyze_graph
+
+analysis = analyze_graph(graph)
+print(analysis.format())
 ```
 
-会得到 `use_count == 2`，避免把共享值错误吞进单消费者 fusion chain。
-
-### Transform pipeline
+每个 Value 都有显式信息：
 
 ```text
-normalize_graph
-      ↓
-eliminate_dead_code
-      ↓
-fold_constants
-      ↓
-plan_fusions
-      ↓
-lower_graph
+producer_node_id
+user_node_ids
+use_count
+is_graph_output
+is_live
 ```
 
-### Pointwise fusion
+这些信息是 DCE 和 fusion 的依赖，而不是在 pass 内临时猜测。
 
-首批 fusible logical ops：
+## 3. Graph normalization
+
+```python
+normalized = normalize_graph(graph)
+```
+
+特点：
+
+- 不修改 source Graph；
+- deterministic Value / Node rebuilding；
+- input/output ordering 保持；
+- constant payload / metadata 保持；
+- before / after 都执行 validation。
+
+## 4. Dead Code Elimination
+
+```text
+Graph outputs
+     ↓ reverse reachability
+live Values / Nodes
+     ↓
+rebuilt Graph
+```
+
+例如：
+
+```python
+def fn(x):
+    dead = x * x
+    live = x + x
+    return live
+```
+
+DCE 后 `dead` multiply 被移除。
+
+v0.14 只对当前 educational Graph 中被视作 pure 的节点做这一推理，不声称拥有通用 side-effect analysis。
+
+## 5. Safe constant folding
+
+首批 foldable logical ops：
 
 ```text
 add
@@ -138,16 +106,84 @@ mul
 relu
 ```
 
-首批 barriers：
+只在所有 Tensor inputs 都是 captured constants、同 device、且不 requires_grad 时折叠。
+
+例如：
+
+```text
+constant A
+constant B
+   ↓
+A * B
+   ↓
+relu
+```
+
+可在 lowering 时变成一个新的 `TensorConstant`。
+
+Grad-requiring constants 不折叠，避免改变梯度语义。
+
+## 6. Pointwise fusion
+
+首批 fusible ops：
+
+```text
+aten::add.Tensor
+aten::mul.Tensor
+aten::relu.default
+```
+
+例如：
+
+```text
+x ──┐
+    mul ── add ── relu
+ y ─┘      ▲
+           x
+```
+
+可以形成：
+
+```text
+PointwiseFusion
+  nodes = [mul, add, relu]
+```
+
+但 fusion 不是简单把相邻节点贴标签。中间 Value 必须满足真实 dependency/use-count 条件。
+
+如果：
+
+```text
+shared
+ ├── branch A
+ └── branch B
+```
+
+则 producer 不会被错误吞入一个单链 fusion group。
+
+## 7. Fusion barriers
+
+当前明确作为 barrier：
 
 ```text
 matmul
 sum
 conv / pool
-AOT backward helpers
+aot::unbroadcast
+aot::sum_backward
+aot::transpose2d
+aot::relu_backward
 ```
 
-Lowered IR：
+它们进入：
+
+```text
+ExternalOp
+```
+
+并继续通过正常 Dispatcher 执行。
+
+## 8. Lowered representation
 
 ```text
 LoweredProgram
@@ -155,113 +191,131 @@ LoweredProgram
 └── PointwiseFusion
 ```
 
-`ExternalOp` 继续通过 Dispatcher；`PointwiseFusion` 使用可读的 NumPy reference expression 执行。
-
-## 4. v0.14 最重要的架构连接
-
-v0.13 已把 backward 变成普通 Graph，因此 v0.14 不需要第二套 backward optimizer：
+查看：
 
 ```python
-forward_lowered = lower_graph(program.forward_graph)
-backward_lowered = lower_graph(program.backward_graph)
+result = lower_graph(graph)
+print(result.program.format())
+print(result.stats().format())
+print(result.explain())
 ```
 
-同时 `LoweringResult.source_to_lowered_value` 保留 source Value 到 transformed Value 的映射，使 v0.13 的 saved-value ABI 在 forward lowering 后仍然成立。
-
-核心 correctness chain：
+可观察 metrics 包括：
 
 ```text
-GraphInterpreter
-      ==
-LoweredExecutor
+original_nodes
+normalized_nodes
+live_nodes_after_dce
+constants_folded
+optimized_nodes
+fusion_groups
+fused_nodes
+external_nodes
+lowered_instructions
+```
+
+注意：
+
+```text
+fewer nodes != automatically faster
+```
+
+性能测量属于 v0.15。
+
+## 9. LoweredExecutor
+
+```python
+lowered = lower_graph(graph)
+out = LoweredExecutor(lowered.program)(x, y)
+```
+
+执行策略：
+
+```text
+ExternalOp
+   ↓
+Dispatcher
+
+PointwiseFusion
+   ↓
+NumPy reference expression
+```
+
+fusion executor 会保留 CPU / EDU logical device identity，但不会生成 C++/CUDA/Triton kernel。
+
+整个 lowered run 是 first-order numerical execution，不会构造一个“部分 fused、部分 eager”的 Autograd graph。
+
+## 10. 为什么 v0.13 很重要
+
+因为 backward 在 v0.13 已成为显式 Graph，所以 v0.14 的同一 lowering pipeline 可以直接处理：
+
+```text
+AOTProgram.forward_graph
+AOTProgram.backward_graph
+```
+
+核心 reference proof：
+
+```text
+GraphInterpreter(forward)
+==
+LoweredExecutor(lowered forward)
 ```
 
 以及：
 
 ```text
-eager AutogradEngine gradients
-      ==
-v0.13 explicit backward Graph
-      ==
-v0.14 lowered backward Graph
+AOT backward Graph reference gradients
+==
+LoweredExecutor(lowered backward) gradients
 ```
 
-## 5. 性能边界
-
-v0.14 **不声称性能提升**。
-
-例如：
+## 11. 重要文件
 
 ```text
-mul + add + relu
-→ one PointwiseFusion instruction
-```
-
-只说明 compiler representation 已经融合，不意味着当前 Python/NumPy reference executor 一定更快。
-
-真正的：
-
-```text
-profiling
-Value lifetime
-allocation count
-buffer reuse
-preallocation
-peak live memory
-benchmark
-```
-
-统一留到 v0.15。
-
-## 6. 推荐阅读 v0.14
-
-```text
-mini_pytorch/compiler/ir.py
-      ↓
 mini_pytorch/compiler/analysis.py
-      ↓
 mini_pytorch/compiler/lowering.py
-      ↓
+
 tests/test_lowering.py
-      ↓
 docs/LOWERING_FUSION.md
-      ↓
 examples/17_lowering_fusion.py
 ```
 
-## 7. Quick run
+推荐阅读：
+
+```text
+compiler/ir.py
+    ↓
+compiler/analysis.py
+    ↓
+compiler/lowering.py
+    ↓
+test_lowering.py
+    ↓
+LOWERING_FUSION.md
+    ↓
+17_lowering_fusion.py
+```
+
+## 12. Quick run
 
 ```bash
 python examples/17_lowering_fusion.py
 python -m unittest discover -s tests -v
 ```
 
-当前验证基线：
+## 13. Non-goals
 
-```text
-221 / 221 tests passed
-```
+v0.14 不实现：
 
-## 8. Compiler learning path
+- production TorchInductor；
+- Triton / CUDA / C++ code generation；
+- GPU scheduling / autotuning；
+- symbolic shapes；
+- arbitrary alias/mutation analysis；
+- memory planning / buffer reuse；
+- 未经 benchmark 的性能结论。
 
-```text
-v0.11  Graph IR
-   ↓
-v0.12  Guards / Cache / Recompile
-   ↓
-v0.13  AOT-style backward Graph
-   ↓
-v0.14  Lowering / Fusion
-   ↓
-v0.15  Runtime / Performance Mechanics
-   ↓
-v1.0   Integrated Architecture
-```
+## 14. Next
 
-## 9. Next — v0.15
-
-下一阶段回答：
-
-> 当 LoweredProgram 已经正确后，runtime 如何测量每条 instruction、推导 Value 生命周期、减少 allocation、复用 buffer，并用可重复 benchmark 判断优化到底有没有收益？
-
-v0.15 的原则是 **measurement before optimization**：没有测量结果，就不做速度结论。
+`v0.15` 将研究 **Runtime / Performance Mechanics**：profiling、Value lifetime、buffer reuse、preallocation、execution plan 和真实 benchmark。

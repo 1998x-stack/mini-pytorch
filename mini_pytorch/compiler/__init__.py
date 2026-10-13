@@ -1,4 +1,4 @@
-"""Educational graph/compiler-facing APIs through mini-pytorch v0.14."""
+"""Educational graph/compiler-facing APIs through mini-pytorch v0.15."""
 from .ir import Graph, Node, TensorConstant, Value, ValueRef
 from .capture import CapturedGraph, GraphBreakError, capture, is_capturing
 from .interpreter import GraphInterpreter
@@ -48,6 +48,18 @@ from .lowering import (
     normalize_graph,
     plan_fusions,
 )
+from .benchmark import BenchmarkConfig, BenchmarkReport, benchmark
+from .runtime_analysis import (
+    RuntimeAnalysisError,
+    ValueLifetime,
+    ValueLifetimeAnalysis,
+    analyze_value_lifetimes,
+    instruction_input_value_ids,
+    instruction_output_value_ids,
+    instruction_produced_value_ids,
+    instruction_referenced_value_ids,
+)
+from .profiler import ExecutionEvent, ExecutionProfile, ProfiledResult, profile_lowered
 
 __all__ = [
     "Graph",
@@ -105,4 +117,19 @@ __all__ = [
     "plan_fusions",
     "lower_graph",
     "LoweredExecutor",
+    "BenchmarkConfig",
+    "BenchmarkReport",
+    "benchmark",
+    "RuntimeAnalysisError",
+    "ValueLifetime",
+    "ValueLifetimeAnalysis",
+    "analyze_value_lifetimes",
+    "instruction_input_value_ids",
+    "instruction_output_value_ids",
+    "instruction_produced_value_ids",
+    "instruction_referenced_value_ids",
+    "ExecutionEvent",
+    "ExecutionProfile",
+    "ProfiledResult",
+    "profile_lowered",
 ]

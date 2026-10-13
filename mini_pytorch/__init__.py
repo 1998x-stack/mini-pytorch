@@ -82,4 +82,4 @@ __all__ = [
     "save_checkpoint",
     "load_checkpoint",
 ]
-__version__ = "0.14.0"
+__version__ = "0.15.0"

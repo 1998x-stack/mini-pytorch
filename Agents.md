@@ -1,294 +1,92 @@
-# Agents.md — mini-pytorch Development Contract
+# Agents.md — mini-pytorch v0.15 Development Contract
 
-> **Mandatory:** every future iteration reads this file before changing code, tests, docs, branches or architecture.
->
-> This is the canonical contract for `main`. Frozen version branches carry branch-specific contracts.
+> Read before modifying branch `v0.15`.
 
-## 1. Mission
+## Branch identity
 
-mini-pytorch is a NumPy-first educational framework for understanding real PyTorch architectural boundaries one layer at a time.
+- Branch: `v0.15`
+- Previous: `v0.14`
+- Theme: Runtime / Performance Mechanics
+- Status: active until exact final-head CI passes
+- Starting baseline: 221 tests
 
-Priority order:
+## Required dependency order
 
 ```text
-architectural clarity
-      ↓
-correctness / invariants
-      ↓
-inspectability
-      ↓
-reference proofs / tests
+LoweredProgram
       ↓
 measurement
       ↓
-optimization
-```
-
-Do not optimize for API completeness and do not copy upstream PyTorch source.
-
-## 2. Mandatory branch workflow
-
-```text
-validated main
-   ↓
-create vX.Y
-   ↓
-write branch version.md + Agents.md first
-   ↓
-implement one dominant mental model
-   ↓
-full tests + docs + example
-   ↓
-exact branch-head CI green
-   ↓
-freeze historical snapshot
-   ↓
-exact frozen-head CI green
-   ↓
-fast-forward validated tree into main
-   ↓
-restore canonical README / Agents / Plan
-   ↓
-exact main-head CI green
-```
-
-`main` must remain the newest integrated validated framework state.
-
-## 3. Version sequence
-
-```text
-v0.1  Tensor / Dynamic Autograd                           ✅
-v0.2  Optimizer state / LR Scheduler                     ✅
-v0.3  Dataset / Sampler / DataLoader / MNIST             ✅
-v0.4  Storage / stride / views / version safety          ✅
-v0.5  Operator Registry / Dispatcher / Redispatch        ✅
-v0.6  Neural-network operator stack / CNN                ✅
-v0.7  Device / Backend abstraction                       ✅
-v0.8  Advanced Autograd Engine                           ✅
-v0.9  Training Runtime / Serialization / Reproducibility ✅
-v0.10 Distributed / DDP Concepts                         ✅
-v0.11 Graph IR / Eager-to-Graph Capture                  ✅
-v0.12 Guards / Graph Cache / Recompile                   ✅
-v0.13 AOTAutograd-like Graph Differentiation             ✅
-v0.14 Lowering / Fusion / Inductor-like Concepts         ✅
-v0.15 Runtime / Performance Mechanics                    ← next
-```
-
-## 4. Current integrated compiler stack
-
-```text
-Python eager
-   ↓
-Dispatcher capture
-   ↓
-Graph IR
-   ↓
-Guards / GraphCache
-   ↓
-AOT differentiation
-   ├── forward Graph
-   └── backward Graph
-         ↑
- saved Values + grad_output
-   ↓
-normalize / analyze
-   ↓
-DCE / constant folding
-   ↓
-use-aware fusion
-   ↓
-LoweredProgram
-   ├── ExternalOp
-   └── PointwiseFusion
-   ↓
-LoweredExecutor
-```
-
-Frozen compiler invariants through v0.14:
-
-- capture records outer logical Dispatcher operations, not redispatch internals;
-- Graph IR does not bake in backend/Autograd dispatch decisions;
-- guards/cache specialize rather than mutate incompatible Graphs;
-- AOT backward uses explicit saved Values and explicit gradient accumulation;
-- source Graphs are not mutated by v0.14 passes;
-- use-count/liveness data is explicit;
-- DCE operates only under the documented pure-Graph assumption;
-- grad-requiring constants are not folded;
-- pointwise fusion is limited to `add/mul/relu` in v0.14;
-- branching/shared values stop the conservative linear-chain fusion model;
-- matmul/reduction/conv/pool/AOT helpers remain fusion barriers;
-- LoweredExecutor is first-order and runs under `no_grad`;
-- source-to-lowered Value mapping preserves AOT saved-value ABI;
-- reduced instruction count is not a performance claim.
-
-## 5. Cross-layer architecture rules
-
-- separate policy from mechanism;
-- avoid circular core imports;
-- backend kernels stay independent of Module/Optimizer/DataLoader/runtime/distributed/compiler policy;
-- Autograd policy stays out of numerical kernels;
-- preserve Storage/stride/view/version invariants;
-- backend selection belongs to Device/Dispatcher;
-- AutogradEngine owns eager backward runtime state;
-- checkpoint/runtime logic stays above Tensor/Dispatcher;
-- distributed synchronization stays outside numerical kernels and optimizer algorithms;
-- compiler transformations do not become a second Tensor/backend architecture;
-- unsupported behavior fails explicitly rather than silently changing semantics.
-
-## 6. Testing contract
-
-Every subsystem should include, where applicable:
-
-- happy path;
-- invariant/property tests;
-- error-path tests;
-- numerical/reference validation;
-- integration proof;
-- full historical regression.
-
-Run:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-Current integrated baseline:
-
-```text
-v0.14
-221 tests
-OK
-```
-
-Never claim a version or performance result unless the exact reported state was actually measured/validated.
-
-## 7. Documentation contract
-
-Review on each version:
-
-```text
-README.md
-version.md
-Agents.md
-MANIFEST.txt
-relevant docs/*
-relevant example
-Plan.md on main
-```
-
-Every version README/version file must explain the delta, architecture, invariants, tests, non-goals, reading order and next dependency.
-
-## 8. Frozen branch rule
-
-Frozen version branches may receive only:
-
-- documentation corrections;
-- tests clarifying already-promised behavior;
-- narrowly scoped fixes inside that historical version boundary.
-
-Future architecture belongs on a new version branch.
-
-## 9. v0.15 design rules — Runtime / Performance Mechanics
-
-Central question:
-
-> Once LoweredProgram is correct, how should runtime execution be measured and how can memory/work scheduling be improved using explicit evidence?
-
-Target layering:
-
-```text
-LoweredProgram
-      ↓
-RuntimeProfiler
-      ↓
 Value lifetime analysis
       ↓
-BufferPlanner
+Buffer planning
       ↓
 ExecutionPlan
       ↓
 PlannedExecutor
       ↓
-BenchmarkReport
+benchmark evidence
 ```
 
-### Measurement before optimization
+Do not implement reuse or make performance claims before measurement/lifetime semantics are explicit.
 
-No optimization may be justified by intuition alone.
+## Stage 1 contract
 
-Benchmark protocol must define:
+### Benchmarking
 
-```text
-warmup
-repeat count
-measured iterations
-median / distribution
-input shapes/dtypes/device
-executor variant
-```
-
-Do not advertise a speedup from a single timing sample.
+- use a monotonic high-resolution timer;
+- warmup count is explicit and excluded;
+- measured repeats and iterations-per-repeat are explicit positive integers;
+- report per-iteration samples and summary statistics;
+- do not use absolute speed thresholds in unit tests;
+- benchmark setup/compile/planning time must remain distinguishable from steady-state execution when later compared.
 
 ### Profiling
 
-Runtime profiling should expose per-instruction data such as:
+- profiling is opt-in and must not alter numerical results;
+- record one event per `LoweredProgram` instruction;
+- keep instruction index/kind/label, input/output Value ids and elapsed time inspectable;
+- ordinary execution must not pay timing work when no observer/profiler is requested;
+- profiling may use `LoweredExecutor` instrumentation but must not duplicate numerical execution semantics in a second executor.
+
+### Value lifetime analysis
+
+For each Graph Value compute:
 
 ```text
-instruction id/type
-operator/fusion name
-elapsed time
-output shapes
-allocation events
+birth_instruction
+last_use_instruction
+ownership flags
+shape / dtype / device metadata
 ```
 
-Instrumentation must be optional and must not change numerical semantics.
+Rules:
 
-### Value lifetime
+- graph input/constant birth = -1;
+- graph outputs live through boundary = `len(instructions)`;
+- explicitly retained/saved Values also live through boundary;
+- intermediate fused node outputs remain analyzable because v0.14 reference fusion materializes them;
+- every referenced runtime Value must have a valid producer/input/constant origin;
+- malformed producer/lifetime situations fail explicitly.
 
-Derive explicit intervals from `LoweredProgram`:
+## Future buffer-planning rules
 
-```text
-birth instruction
-last-use instruction
-is graph input
-is constant
-is graph output
-```
-
-Do not reuse a value's storage before its last use.
-
-### Buffer planning
-
-Start conservatively.
-
-A buffer may be reused only when compatibility is explicit, for example:
+When Stage 2 begins, reuse is allowed only if all are explicit:
 
 ```text
-lifetimes do not overlap
-shape/numel compatible
-dtype identical
-device identical
+non-overlapping lifetimes
+compatible shape/numel
+same dtype
+same device
 not externally owned input/constant/output
+not retained for AOT backward
 ```
 
-Buffer reuse must be represented as plan data, not hidden mutation.
+Buffer assignment must be plan data, never hidden mutation.
 
-### ExecutionPlan
+## Correctness references
 
-Expected conceptual representation:
-
-```text
-ExecutionPlan
-├── instructions
-├── value lifetimes
-├── value → buffer slot assignments
-├── allocation metadata
-└── profiling/benchmark metadata
-```
-
-### Correctness oracle
-
-For every optimization path:
+For any runtime optimization path:
 
 ```text
 GraphInterpreter
@@ -298,46 +96,60 @@ LoweredExecutor
 PlannedExecutor
 ```
 
-AOT forward and backward paths remain mandatory integration tests.
+AOT forward/backward integration remains mandatory.
 
-## 10. v0.15 performance-reporting rules
+## Performance-reporting rules
 
-- separate compile/planning time from steady-state execution time;
-- report warmup policy;
-- use repeated measurements;
-- prefer median and distribution/range rather than one timing;
-- compare identical inputs/workloads;
-- distinguish CPU timing from EDU logical-device identity tests;
-- report allocation/peak-live metrics separately from wall-clock speed;
-- a slower result is valid evidence and must not be hidden;
-- do not claim PyTorch performance parity.
+- repeated samples, not single-shot timings;
+- median is the primary latency summary;
+- also expose min/max/mean or distribution information;
+- compare identical inputs and workload structure;
+- allocation/peak-live metrics are separate from wall-clock timing;
+- a slower result is valid and must not be hidden;
+- no PyTorch performance-parity claim.
 
-## 11. v0.15 explicit non-goals
+## Non-goals
 
-- CUDA/Triton code generation;
-- GPU kernel benchmarking;
+- CUDA/Triton/C++ kernel generation;
+- GPU timing;
 - production allocator;
-- asynchronous stream scheduling;
-- real multithreaded task scheduler;
-- symbolic-shape memory planning;
-- production-grade profiler;
-- cherry-picked benchmark claims.
+- asynchronous streams;
+- multithreaded scheduler;
+- symbolic-shape planner;
+- benchmark cherry-picking.
 
-## 12. Definition of Done
+## Testing contract
 
-A future version freezes only when:
+Required Stage 1 tests:
 
-- its dominant mental model is explicit;
-- implementation and failure boundaries are complete;
-- correctness/reference proofs are green;
-- docs/example/manifest are complete;
-- benchmark methodology is reproducible when performance is discussed;
-- exact final version-head CI is green;
-- validated tree is integrated into main;
-- Plan.md advances the next architectural dependency.
+- benchmark config validation;
+- exact warmup/repeat call counts;
+- report statistic consistency without absolute latency assertions;
+- profiled vs ordinary lowered numerical equivalence;
+- event count/order/kind/Value ids;
+- lifetime birth/last-use for inputs/intermediates/outputs/constants;
+- graph-output boundary extension;
+- retained/AOT saved-value boundary extension;
+- fused internal Value lifetime handling;
+- malformed lifetime/reference failures;
+- CPU/EDU structural parity where relevant;
+- all 221 historical tests remain green.
 
-## 13. Current directive
+Run:
 
-`main` contains completed **v0.14 Lowering / Fusion / Inductor-like Concepts**.
+```bash
+python -m unittest discover -s tests -v
+```
 
-Next branch: **v0.15 — Runtime / Performance Mechanics**.
+## Definition of Done
+
+Freeze v0.15 only after:
+
+- benchmark/profiling/lifetime layers are stable;
+- conservative buffer planning and ExecutionPlan exist;
+- PlannedExecutor exists and matches references;
+- AOT saved Values remain correct;
+- allocation/reuse/peak-live metrics are inspectable;
+- docs/example/manifest/version are complete;
+- exact final `v0.15` HEAD CI is green;
+- validated tree is integrated into `main`.
