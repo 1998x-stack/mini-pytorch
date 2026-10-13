@@ -20,6 +20,7 @@ from . import nn
 from . import optim
 from . import data
 from . import runtime
+from . import distributed
 from .runtime import (
     CHECKPOINT_SCHEMA_VERSION,
     CheckpointError,
@@ -64,6 +65,7 @@ __all__ = [
     "optim",
     "data",
     "runtime",
+    "distributed",
     "manual_seed",
     "get_rng_state",
     "set_rng_state",
@@ -78,4 +80,4 @@ __all__ = [
     "save_checkpoint",
     "load_checkpoint",
 ]
-__version__ = "0.9.0"
+__version__ = "0.10.0"

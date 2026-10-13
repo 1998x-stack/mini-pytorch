@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mini-pytorch-learning"
-version = "0.9.0"
-description = "A small, extensible PyTorch-like framework for learning tensor storage, advanced autograd, reproducible training runtime, checkpoints, device/backend dispatch, neural networks, optimizers, and data loading"
+version = "0.10.0"
+description = "A small, extensible PyTorch-like framework for learning tensor/autograd internals, DDP concepts, reproducible training runtime, device/backend dispatch, neural networks, optimizers, and data loading"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
