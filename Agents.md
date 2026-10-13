@@ -1,28 +1,27 @@
 # Agents.md — mini-pytorch v0.3
 
-> Read this file before modifying this branch.
+> Read this file before modifying branch `v0.3`.
 
 ## Branch identity
 
 - Branch: `v0.3`
-- Role: active/finalizing learning snapshot
+- Role: **frozen historical learning snapshot**
 - Theme: Dataset + Sampler + BatchSampler + DataLoader + MNIST classification
 - Previous version: `v0.2`
-- Required companion document: `version.md`
+- Companion document: `version.md`
+- Current validation baseline: **48 tests / OK**
 
 ## Mandatory reading order
 
 1. `Agents.md`
 2. `version.md`
-3. `docs/ROADMAP.md`
-4. relevant data/nn/training source
-5. relevant tests
+3. relevant source
+4. relevant tests
+5. historical roadmap only as context
 
-## Scope rule
+## Frozen scope
 
-v0.3 exists to explain the data-input side of training and complete an end-to-end classification path.
-
-Primary architecture:
+This branch teaches the data-input side of training:
 
 ```text
 Dataset
@@ -37,96 +36,79 @@ collate_fn
    ↓
 Tensor batch
    ↓
-model
-   ↓
-CrossEntropyLoss
-   ↓
-Autograd
-   ↓
-Optimizer + Scheduler
+model / CrossEntropyLoss
 ```
 
-## Allowed v0.3 work
+The implemented snapshot includes Dataset/TensorDataset, SequentialSampler, RandomSampler, replacement sampling, BatchSampler, sampler-driven DataLoader, MNIST loading, Flatten, CrossEntropyLoss and the MNIST MLP example.
 
-Current/finalizing scope includes:
+## Allowed maintenance
 
-- Dataset/TensorDataset fixes;
-- SequentialSampler/RandomSampler/BatchSampler;
-- Subset and `random_split`;
-- SubsetRandomSampler;
-- WeightedRandomSampler;
-- explicit single-process DataLoader iterator/fetcher lifecycle;
-- collate behavior/tests;
-- MNIST dataset/training integration;
-- resumable checkpoint containing model/optimizer/scheduler/epoch state;
-- confusion matrix/prediction visualization if kept small and educational.
+Only narrow maintenance is allowed:
+
+- documentation corrections describing this snapshot;
+- tests that verify behavior already promised by v0.3;
+- CI/tooling maintenance;
+- narrow correctness fixes strictly inside existing v0.3 behavior when the historical semantics are demonstrably wrong.
+
+Any such code fix must not import later architectural mechanisms merely because they exist on `main`.
+
+## Former planned work is closed
+
+The active-development roadmap once considered:
+
+- `Subset` / `random_split`;
+- `SubsetRandomSampler`;
+- `WeightedRandomSampler`;
+- explicit single-process iterator/fetcher internals;
+- resumable optimizer/scheduler/epoch checkpoints;
+- confusion-matrix / prediction visualization helpers.
+
+Those items are **not open work on v0.3** and are not part of its frozen completion contract. Some concepts were later assigned to different version layers (for example, resumable training state in v0.9).
 
 ## Explicit non-goals
 
-Do not add these to v0.3:
+Do not add later mechanisms to this branch:
 
-- Storage/stride/view/contiguous redesign — v0.4;
-- Dispatcher/operator registry — v0.5;
-- Conv2d/CNN primitives beyond what current scope requires — later version;
-- CUDA/device backend architecture;
-- multiprocessing DataLoader workers;
-- pinned memory/prefetch;
+- Storage / stride / view / contiguous redesign;
+- Dispatcher / operator registry;
+- CNN operator stack;
+- device/backend architecture;
+- multiprocessing/prefetch/pinned-memory DataLoader;
+- runtime checkpoint subsystem from v0.9;
 - distributed training;
 - compiler stack.
-
-Record future ideas in roadmap/planning docs rather than pulling them into this branch.
 
 ## Responsibility boundaries
 
 - Dataset: sample access/storage semantics.
-- Sampler: index selection policy.
+- Sampler: index-selection policy.
 - BatchSampler: grouping indices into batches.
-- DataLoader: execution/fetch/collation lifecycle.
-- `collate_fn`: convert a sample list into batch structure.
+- DataLoader: fetch/collation lifecycle.
+- `collate_fn`: converts sample lists into batch structure.
 - model/loss/optimizer: must not own sampling policy.
 
-The Dataset must not implement shuffle policy.
+## Testing contract
 
-## Testing requirements
-
-Data-pipeline changes should cover:
-
-- deterministic sequential order;
-- seeded random reproducibility;
-- epoch-to-epoch random behavior where intended;
-- replacement sampling;
-- custom sampler behavior;
-- `drop_last`;
-- invalid option combinations;
-- custom/nested collation;
-- MNIST IDX parser fixtures;
-- end-to-end classification smoke path.
-
-Preferred full-suite command:
+For any permitted maintenance, run:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-Do not claim the whole suite passes unless run on the exact branch state.
+Do not claim branch health without exact-head CI evidence.
 
-## Integration with `main`
+## Relationship to main
 
-`main` is the canonical newest integrated state.
+`main` is the canonical newest integrated state. v0.3 is intentionally older and must never become the base for new architecture work.
 
-Any validated **code behavior** added on `v0.3` must be synchronized into `main` immediately. Do not allow v0.3 to contain newer working implementation code while main remains stale.
+```text
+historical study / narrow correction
+           ↑
+          v0.3
 
-Branch-specific `Agents.md`/`version.md` documentation may differ from main because they describe the snapshot itself.
+new framework development
+           ↑
+          main
+```
 
-## Freeze rule
-
-Before v0.3 is frozen:
-
-- promised data pipeline is complete;
-- tests pass;
-- MNIST example remains coherent;
-- `version.md` accurately states final delta from v0.2;
-- latest validated implementation exists on `main`;
-- remaining future work is moved to `Plan.md` on main.
-
-After freeze, new architecture work must begin from latest `main`, not from `v0.3` directly.
+Do not reopen the historical roadmap from this branch.
