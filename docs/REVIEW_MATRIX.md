@@ -1,6 +1,8 @@
 # Branch Validation Matrix
 
-This matrix records the completed post-v1.0 repository review. Every version branch was validated on its **current exact HEAD** with its own branch-local GitHub Actions workflow; a newer branch passing was never used as a substitute for an older snapshot.
+This matrix records the completed post-v1.0 repository review. Every historical version branch was validated on its **current exact HEAD** with its own branch-local GitHub Actions workflow; a newer branch passing was never used as a substitute for an older snapshot.
+
+For `main`, the table pins the exact **reviewed implementation HEAD** where the post-v1.0 correctness hardening reached 292 tests. Later documentation-only commits are separately required to pass the same exact-main CI gate, but they do not alter that reviewed implementation tree.
 
 CI maintenance performed during the review:
 
@@ -11,7 +13,7 @@ CI maintenance performed during the review:
 
 ## Exact-head validation results
 
-| Branch | Current reviewed HEAD | Milestone | Result |
+| Branch | Validated snapshot / implementation HEAD | Milestone | Result |
 | --- | --- | --- | --- |
 | `v0.1` | `8d40cc8a` | Tensor / Autograd / Module / basic Optimizer | ✅ exact-head CI success |
 | `v0.2` | `5c0819c2` | Optimizer family + scheduler | ✅ exact-head CI success |
@@ -29,7 +31,7 @@ CI maintenance performed during the review:
 | `v0.14` | `93dbc6d6` | Analysis / lowering / fusion | ✅ exact-head CI success |
 | `v0.15` | `d0994168` | Runtime / performance planning | ✅ exact-head CI success |
 | `v1.0` | `d28ad884` | Frozen integrated architecture | ✅ exact-head CI success |
-| `main` | `28a9071d` | Post-v1.0 reviewed integrated state | ✅ **292/292 tests + integrated example PASS** |
+| `main` | `28a9071d` | Post-v1.0 reviewed implementation | ✅ **292/292 tests + integrated example PASS** |
 
 The full main validation commands are:
 
@@ -38,8 +40,12 @@ python -m unittest discover -s tests -v
 python examples/19_integrated_architecture.py
 ```
 
+The first documentation-only closeout HEAD after the reviewed implementation, `61a55457`, was also run on exact `main` and passed the same **292/292 + integrated-example** gate. Future documentation changes must continue to satisfy the exact-head CI rule rather than relying on this recorded result.
+
 ## Interpretation
 
-A green row means the snapshot represented by that branch remains internally coherent under its own historical contract. It does **not** mean older branches contain later fixes or later subsystems. Correctness hardening discovered after v1.0 is integrated into `main`; frozen branches receive only scope-preserving maintenance when justified.
+A green historical row means the snapshot represented by that branch remains internally coherent under its own historical contract. It does **not** mean older branches contain later fixes or later subsystems. Correctness hardening discovered after v1.0 is integrated into `main`; frozen branches receive only scope-preserving maintenance when justified.
+
+For `main`, `28a9071d` is intentionally the reviewed **framework implementation** boundary. Documentation-only commits may advance the branch HEAD while leaving that implementation tree unchanged; those commits still require their own CI run.
 
 The detailed correctness findings and intentionally retained limits are documented in [`REVIEW_FINDINGS.md`](REVIEW_FINDINGS.md).
