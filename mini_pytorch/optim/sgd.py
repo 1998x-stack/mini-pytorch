@@ -38,6 +38,18 @@ class SGD(Optimizer):
             },
         )
 
+    def _validate_param_group(self, group) -> None:
+        if group["lr"] < 0:
+            raise ValueError("lr must be non-negative")
+        if group["momentum"] < 0:
+            raise ValueError("momentum must be non-negative")
+        if group["dampening"] < 0:
+            raise ValueError("dampening must be non-negative")
+        if group["weight_decay"] < 0:
+            raise ValueError("weight_decay must be non-negative")
+        if group["nesterov"] and (group["momentum"] <= 0 or group["dampening"] != 0):
+            raise ValueError("Nesterov requires momentum > 0 and dampening == 0")
+
     def step(self) -> None:
         for group in self.param_groups:
             lr = group["lr"]
