@@ -10,25 +10,44 @@ from .dataset import Dataset
 from .sampler import BatchSampler, RandomSampler, Sampler, SequentialSampler
 
 
+def _require_homogeneous(batch, expected_type, *, label: str) -> None:
+    if not all(isinstance(item, expected_type) for item in batch):
+        raise TypeError(f"default_collate requires homogeneous {label} samples")
+
+
 def default_collate(batch):
     """Stack a homogeneous batch into Tensor objects.
 
     Collation is intentionally separate from sampling: samplers choose indices,
     while ``default_collate`` only converts already-fetched samples into a batch.
+    Nested tuple/list samples must have equal lengths; silently truncating ragged
+    samples would lose user data and is therefore rejected explicitly.
     """
     if not batch:
         raise ValueError("cannot collate an empty batch")
 
     first = batch[0]
     if isinstance(first, Tensor):
+        _require_homogeneous(batch, Tensor, label="Tensor")
         return Tensor(np.stack([item.data for item in batch], axis=0))
     if isinstance(first, np.ndarray):
+        _require_homogeneous(batch, np.ndarray, label="ndarray")
         return Tensor(np.stack(batch, axis=0))
     if isinstance(first, (int, float, np.number, bool)):
+        scalar_types = (int, float, np.number, bool)
+        _require_homogeneous(batch, scalar_types, label="scalar")
         return Tensor(np.asarray(batch))
     if isinstance(first, tuple):
+        _require_homogeneous(batch, tuple, label="tuple")
+        expected_len = len(first)
+        if any(len(item) != expected_len for item in batch):
+            raise ValueError("default_collate requires equal-size tuple samples")
         return tuple(default_collate(list(items)) for items in zip(*batch))
     if isinstance(first, list):
+        _require_homogeneous(batch, list, label="list")
+        expected_len = len(first)
+        if any(len(item) != expected_len for item in batch):
+            raise ValueError("default_collate requires equal-size list samples")
         return [default_collate(list(items)) for items in zip(*batch)]
     raise TypeError(f"default_collate does not support samples of type {type(first)!r}")
 

@@ -52,8 +52,12 @@ class Optimizer:
         if not all(isinstance(p, Parameter) for p in params):
             raise TypeError("optimizer can only optimize nn.Parameter objects")
 
+        param_ids = [id(p) for p in params]
+        if len(param_ids) != len(set(param_ids)):
+            raise ValueError("a parameter appears more than once in the same parameter group")
+
         seen = {id(p) for g in self.param_groups for p in g["params"]}
-        if any(id(p) in seen for p in params):
+        if any(pid in seen for pid in param_ids):
             raise ValueError("some parameters appear in more than one parameter group")
 
         normalized = dict(self.defaults)
