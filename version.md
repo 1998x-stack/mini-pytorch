@@ -1,287 +1,245 @@
-# mini-pytorch v0.15
+# mini-pytorch v1.0
 
 ## Version identity
 
-- **Branch:** `v0.15`
-- **Previous version:** `v0.14`
-- **Theme:** Runtime / Performance Mechanics
-- **Status:** frozen historical learning snapshot
-- **Package version:** `0.15.0`
-- **Starting baseline:** 221 tests
-- **Frozen validation baseline:** **247 / 247 tests passed**
+- **Branch:** `v1.0`
+- **Previous version:** `v0.15`
+- **Theme:** Integrated Architecture
+- **Status:** active development
+- **Package version target:** `1.0.0`
+- **Starting validated baseline:** **247 / 247 tests passed**
+- **Base main commit:** `56191655f1188134e62e965dc58fdd3dcd3d062b`
 
-v0.15 answers:
+v1.0 asks one final question:
 
-> Once a correct `LoweredProgram` exists, how should runtime execution be measured, how long are Values live, how can temporary storage be safely reused, and how do we benchmark the result without making unsupported performance claims?
+> Can the complete mini-pytorch learning stack be traced, explained, exercised and validated as one coherent architecture without adding another major subsystem?
 
-## Core delta from v0.14
+## Core delta from v0.15
 
-```text
-v0.14
-Graph
-  ↓
-LoweredProgram
-  ↓
-LoweredExecutor
-
-v0.15
-LoweredProgram
-  ↓
-Benchmark / Profiler
-  ↓
-Value lifetime analysis
-  ↓
-Buffer intervals / MemoryPlan
-  ↓
-ExecutionPlan
-  ↓
-PlannedExecutor
-```
-
-## Added in this version
-
-### Measurement
-
-- `BenchmarkConfig`
-- `BenchmarkReport`
-- `benchmark()`
-- explicit warmup/repeats/iterations-per-repeat
-- median/mean/min/max latency summaries
-- no absolute speed assertions in tests
-
-### Profiling
-
-- `ExecutionEvent`
-- `ExecutionProfile`
-- `ProfiledResult`
-- `profile_lowered()`
-- one event per lowered instruction
-- deterministic instruction structure with naturally variable timing
-
-### Runtime lifetime analysis
-
-- `ValueLifetime`
-- `ValueLifetimeAnalysis`
-- `analyze_value_lifetimes()`
-- input/constant birth before instruction 0
-- graph output boundary extension
-- AOT retained/saved-value boundary extension
-- fused internal Value visibility
-
-### Buffer planning
-
-- `BufferSpec`
-- `BufferInterval`
-- `BufferSlot`
-- `MemoryPlan`
-- exact shape/dtype/device compatibility
-- non-overlap requirement
-- conservative eligibility limited to pointwise-fusion temporaries
-- graph output and retained values excluded from reuse
-- input/constant and ExternalOp output ownership preserved
-
-### Execution planning
-
-- `ExecutionStep`
-- `ExecutionPlan`
-- `build_execution_plan()`
-- explicit release-after-node schedule
-- separation of compiler work (`LoweredProgram`) from runtime resource assignment (`ExecutionPlan`)
-
-### Planned execution
-
-- `PlannedExecutor`
-- preallocated `Storage.empty()` slots for eligible pointwise temporaries
-- NumPy `out=` execution for add/mul/relu when a slot is assigned
-- ExternalOps continue through Dispatcher
-- fresh slot pool per call
-- `run_with_stats()`
-- `run_with_values()` for explicitly retained values
-
-### Runtime metrics
-
-- physical slot count
-- logical assigned Value count
-- reuse count
-- naive allocation bytes
-- planned buffer bytes
-- bytes avoided by reuse
-- peak eligible live bytes
-- released environment reference count
-
-### Compiler robustness fix
-
-Runtime stress tests exposed an inherited capture identity bug. A capture session previously stored only `id(tensor) -> Value`. Short-lived temporary Tensors could be garbage-collected and their Python object ids recycled, causing distinct intermediates to share one Graph Value and creating multiple producers.
-
-Capture now keeps strong references to all observed Tensor objects for the full session and validates object identity with `is` before reusing a Value mapping.
-
-A dedicated regression test creates/deletes many short-lived temporaries and verifies unique producer Values.
-
-## Frozen architecture
+v0.15 completed the last planned mechanism:
 
 ```text
-Python eager
-   ↓
-Graph capture
-   ↓
-AOT forward/backward Graphs
-   ↓
-Lowering / Fusion
-   ↓
 LoweredProgram
-   ├── ExternalOp
-   └── PointwiseFusion
-   ↓
-Runtime measurement
-   ├── benchmark
-   └── profiling
-   ↓
-Value lifetime analysis
-   ↓
+      ↓
+profiling / lifetime analysis
+      ↓
 MemoryPlan
-   ├── BufferInterval
-   └── BufferSlot
-   ↓
+      ↓
 ExecutionPlan
+      ↓
+PlannedExecutor
+```
+
+v1.0 does **not** add another mechanism layer. It consolidates the complete system:
+
+```text
+all validated 0.x mechanisms
+      ↓
+architecture audit
+      ↓
+public API / naming audit
+      ↓
+cross-layer integration proofs
+      ↓
+one end-to-end architecture example
+      ↓
+mini-pytorch ↔ PyTorch concept map
+      ↓
+documentation reconciliation
+      ↓
+release-quality snapshot
+```
+
+## Required deliverables
+
+### 1. Architecture audit
+
+Create `docs/ARCHITECTURE_V1.md` that describes actual ownership and dependency boundaries for:
+
+```text
+Storage / Device
+Tensor
+Dispatcher / Backend
+Autograd
+NN / Optimizer / Data
+Training Runtime / Checkpoint
+Distributed / DDP
+Graph capture / Guards / Cache
+AOT differentiation
+Lowering / Fusion
+Runtime profiling / MemoryPlan / ExecutionPlan
+```
+
+For every layer document:
+
+- responsibility / owner;
+- inputs and outputs;
+- allowed dependencies;
+- forbidden dependencies;
+- important invariants;
+- explicit educational simplifications;
+- failure boundary.
+
+### 2. Public API / naming audit
+
+Audit exported learning APIs from:
+
+```text
+mini_pytorch
+mini_pytorch.nn
+mini_pytorch.optim
+mini_pytorch.data
+mini_pytorch.runtime
+mini_pytorch.distributed
+mini_pytorch.compiler
+```
+
+Only small compatibility-preserving cleanup is allowed. No feature-parity sprint.
+
+### 3. Integrated example
+
+Create `examples/19_integrated_architecture.py` that intentionally demonstrates phases rather than pretending every subsystem belongs in one runtime loop:
+
+```text
+training phase
+  model/data → eager forward/backward → optimizer
+
+runtime state phase
+  checkpoint/RNG/progress round-trip
+
+compiler phase
+  capture → graph replay/cache → AOT forward/backward
+
+lowering/runtime phase
+  lower → ExecutionPlan → PlannedExecutor
+
+verification phase
+  eager/reference/planned outputs and gradients agree
+```
+
+### 4. Cross-layer integration tests
+
+Add focused tests proving composition across existing boundaries, especially:
+
+```text
+Tensor → Dispatcher → Backend → Autograd
+Module → Optimizer → Checkpoint / restore
+Capture → Guards / Cache → AOT → Lowering → ExecutionPlan
+```
+
+Do not duplicate every historical subsystem test.
+
+### 5. PyTorch conceptual mapping
+
+Create `docs/PYTORCH_MAPPING.md` mapping mini-pytorch learning concepts to real PyTorch subsystem families while explicitly documenting simplifications and non-parity.
+
+### 6. Documentation reconciliation
+
+Review and reconcile canonical docs:
+
+```text
+README.md
+Agents.md
+Plan.md on main after integration
+docs/ARCHITECTURE.md
+docs/LEARNING_PATH.md
+docs/ROADMAP.md
+MANIFEST.txt
+```
+
+Historical version-specific docs may remain historically accurate.
+
+## Frozen architecture entering v1.0
+
+```text
+Python API
+   ↓
+Tensor / Storage / Device
+   ↓
+Dispatcher / Backend kernels
+   ↓
+AutogradEngine
+   ↓
+Module / Optimizer / Data
+   ↓
+Training Runtime / Checkpoint / RNG
+   ↓
+Distributed / DDP simulation
+   ↓
+Graph capture / Guards / Cache
+   ↓
+AOT forward + backward Graphs
+   ↓
+Graph analysis / Lowering / Fusion
+   ↓
+LoweredProgram
+   ↓
+profiling / lifetime analysis
+   ↓
+MemoryPlan / ExecutionPlan
    ↓
 PlannedExecutor
 ```
 
-## Correctness proofs
+## Invariants that v1.0 must preserve
 
-```text
-GraphInterpreter output
-      ==
-LoweredExecutor output
-      ==
-PlannedExecutor output
-```
+- Tensor layout remains Storage + shape + stride + offset + Device.
+- Dispatcher remains the operator/backend policy boundary.
+- Autograd policy stays outside backend numerical kernels.
+- eager backward remains owned by `AutogradEngine`.
+- checkpoint/runtime logic stays above Tensor/Dispatcher.
+- optimizer remains unaware of DDP communication.
+- Graph IR does not bake in backend/Autograd dispatch policy.
+- GraphBreak never installs partial cache state.
+- AOT backward uses explicit saved Values and grad outputs.
+- source Graphs are not mutated by lowering passes.
+- ExternalOps continue through Dispatcher.
+- runtime buffer reuse never violates output/saved-value lifetime.
+- older executors remain correctness references for newer execution layers.
 
-AOT chain:
+## Non-goals
 
-```text
-eager Autograd gradients
-      ==
-AOT reference gradients
-      ==
-lowered backward gradients
-      ==
-planned backward gradients
-```
+v1.0 must not add:
 
-CPU and EDU logical placement are both covered where applicable.
-
-## Buffer reuse rules
-
-A Value is eligible only when:
-
-```text
-produced inside PointwiseFusion
-AND not Graph output
-AND not retained/AOT saved
-AND exact shape match
-AND exact dtype match
-AND exact device match
-AND assigned lifetimes do not overlap
-```
-
-First planner algorithm:
-
-```text
-Values in birth order
-   ↓
-scan existing compatible slots
-   ↓
-previous lifetime ended before current birth?
-   ├── yes → reuse
-   └── no  → create new slot
-```
-
-## Important source files
-
-```text
-mini_pytorch/compiler/benchmark.py
-mini_pytorch/compiler/profiler.py
-mini_pytorch/compiler/runtime_analysis.py
-mini_pytorch/compiler/execution_plan.py
-mini_pytorch/compiler/capture.py
-```
-
-## Important tests
-
-```text
-tests/test_runtime_performance.py
-tests/test_execution_plan.py
-tests/test_capture_identity.py
-```
-
-## Documentation / example
-
-```text
-docs/RUNTIME_PERFORMANCE.md
-examples/18_runtime_performance.py
-```
-
-## Validation
-
-Validated release-candidate commit:
-
-```text
-3d5d8b04e5931fa8dac3b8f37ff3a63a16e54980
-```
-
-GitHub Actions environment:
-
-```text
-Ubuntu 24.04
-Python 3.11.17
-NumPy 2.4.6
-```
-
-Result:
-
-```text
-Ran 247 tests
-OK
-```
-
-The frozen branch head differs only by this status/governance documentation and is required to pass its own exact-head CI before integration into `main`.
-
-## Learning goals
-
-After v0.15, the reader should be able to explain:
-
-1. why profiling and benchmarking are different;
-2. why instruction reduction is not automatically a speedup;
-3. how a Value lifetime constrains memory reuse;
-4. why graph outputs and saved forward Values escape normal temporary lifetime;
-5. how logical Values can map to fewer physical buffer slots;
-6. why `LoweredProgram` and `ExecutionPlan` are different abstractions;
-7. why output-buffer execution is introduced narrowly rather than by bypassing Dispatcher;
-8. how AOT saved Values constrain forward memory planning;
-9. why performance claims require repeated measurement;
-10. how runtime stress tests can expose compiler identity/lifetime bugs.
-
-## Explicit non-goals
-
+- CUDA/Triton code generation;
+- a new accelerator backend;
+- symbolic dynamic-shape compiler;
+- production multiprocessing DataLoader;
+- NCCL/network DDP;
 - production allocator;
-- arbitrary equal-byte cross-shape reuse;
-- alias/mutation optimization for arbitrary programs;
-- CUDA/Triton codegen;
-- GPU benchmarking;
-- asynchronous streams/events;
-- multithreaded scheduling;
-- symbolic-shape memory planning;
-- production profiler;
-- PyTorch performance parity;
-- claim that PlannedExecutor is always faster.
+- whole-Python compiler;
+- PyTorch API feature parity;
+- marketing-style benchmark claims.
 
-## Frozen-branch rule
+## Validation policy
 
-Future major mechanisms do not belong on `v0.15`. Only documentation corrections, tests clarifying promised v0.15 behavior, or narrow fixes inside this version boundary are allowed.
+Main command:
 
-## Next version
+```bash
+python -m unittest discover -s tests -v
+```
 
-**v1.0 — Integrated Architecture**.
+Additionally run educational examples that do not require external downloads.
 
-The focus shifts from adding mechanisms to consolidation: architecture consistency, end-to-end examples, API cleanup, mapping to real PyTorch subsystems, and a final learning-oriented release snapshot.
+Never claim v1.0 complete until the exact release-candidate HEAD and exact frozen HEAD both pass CI.
+
+## Definition of Done
+
+v1.0 freezes only after:
+
+1. `docs/ARCHITECTURE_V1.md` matches actual source boundaries;
+2. public APIs/naming are audited and any cleanup is tested;
+3. `examples/19_integrated_architecture.py` demonstrates the major phases coherently;
+4. focused cross-layer integration tests are green;
+5. `docs/PYTORCH_MAPPING.md` clearly distinguishes analogy from parity;
+6. canonical docs and MANIFEST are consistent;
+7. package version is `1.0.0`;
+8. all historical and v1.0 tests pass on exact branch HEAD;
+9. branch is frozen after release-candidate validation;
+10. exact frozen HEAD passes CI;
+11. validated v1.0 tree is integrated into `main`;
+12. canonical `main` docs are restored as the integrated-release view.
+
+## After v1.0
+
+There is no automatic `v1.1` roadmap. Any post-v1.0 expansion requires a separately justified learning goal rather than silently continuing the original 0.x feature sequence.

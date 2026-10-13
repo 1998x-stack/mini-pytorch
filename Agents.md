@@ -1,254 +1,252 @@
-# Agents.md — mini-pytorch Development Contract
+# Agents.md — mini-pytorch v1.0 Development Contract
 
-> **Mandatory:** every future iteration reads this file before changing code, tests, docs, branches, version scope or architecture.
->
-> This file is canonical for `main`. Frozen version branches carry branch-specific historical contracts.
+> Read this file before changing branch `v1.0`.
 
-## 1. Mission
+## 1. Branch identity
 
-mini-pytorch is a NumPy-first educational framework for learning real PyTorch architectural boundaries.
+- Branch: `v1.0`
+- Previous: `v0.15`
+- Theme: Integrated Architecture
+- Status: active until exact frozen-head CI passes
+- Starting baseline: **247 tests / OK**
+- Base main commit: `56191655f1188134e62e965dc58fdd3dcd3d062b`
 
-Priority order:
+## 2. Dominant learning goal
 
-```text
-architectural clarity
-      ↓
-correctness / invariants
-      ↓
-inspectability
-      ↓
-reference proofs / tests
-      ↓
-measurement
-      ↓
-optimization
-```
+v1.0 is a consolidation release.
 
-Do not optimize for API completeness. Do not copy upstream PyTorch source.
+The question is not “what new subsystem should be added?” but:
 
-## 2. Branch workflow
+> Can a reader trace one Tensor expression through the complete architecture, understand who owns each decision, and verify the cross-layer behavior with executable proofs?
 
-```text
-validated main
-   ↓
-create version branch
-   ↓
-branch version.md + Agents.md
-   ↓
-implement one dominant learning goal
-   ↓
-full tests + docs + example
-   ↓
-exact release-candidate HEAD CI green
-   ↓
-freeze branch
-   ↓
-exact frozen HEAD CI green
-   ↓
-fast-forward into main
-   ↓
-restore canonical README / Agents / Plan
-   ↓
-exact main HEAD CI green
-```
+## 3. Required reading order
 
-`main` must remain the newest integrated validated state.
+Before modifying v1.0:
 
-## 3. Completed 0.x sequence
+1. `Agents.md`
+2. `version.md`
+3. `README.md`
+4. relevant current source
+5. relevant historical mechanism docs
+6. tests for the touched boundaries
 
-```text
-v0.1  Tensor / Dynamic Autograd                           ✅
-v0.2  Optimizer state / LR Scheduler                     ✅
-v0.3  Dataset / Sampler / DataLoader / MNIST             ✅
-v0.4  Storage / stride / views / version safety          ✅
-v0.5  Operator Registry / Dispatcher / Redispatch        ✅
-v0.6  Neural-network operator stack / CNN                ✅
-v0.7  Device / Backend abstraction                       ✅
-v0.8  Advanced Autograd Engine                           ✅
-v0.9  Training Runtime / Serialization / Reproducibility ✅
-v0.10 Distributed / DDP Concepts                         ✅
-v0.11 Graph IR / Eager-to-Graph Capture                  ✅
-v0.12 Guards / Graph Cache / Recompile                   ✅
-v0.13 AOTAutograd-like Graph Differentiation             ✅
-v0.14 Lowering / Fusion / Inductor-like Concepts         ✅
-v0.15 Runtime / Performance Mechanics                    ✅
-v1.0  Integrated Architecture                            ← next
-```
+If a source boundary is unclear, inspect the implementation before changing documentation. Documentation must describe the code, not an imagined architecture.
 
-Current integrated validation baseline:
+## 4. Allowed v1.0 work
 
-```text
-v0.15
-247 tests
-OK
-```
+Allowed:
 
-## 4. Frozen architecture invariants through v0.15
+- architecture audit/documentation;
+- small compatibility-preserving API/naming cleanup;
+- focused cross-layer integration tests;
+- integrated educational example;
+- PyTorch subsystem concept mapping;
+- canonical documentation reconciliation;
+- package/release metadata updates;
+- narrow fixes exposed by integration work when they remain inside existing subsystem contracts.
+
+## 5. Forbidden scope expansion
+
+Do not introduce:
+
+- CUDA/Triton codegen;
+- another backend family;
+- symbolic shape engine;
+- multiprocessing/prefetch DataLoader architecture;
+- NCCL/network ProcessGroup;
+- production caching allocator;
+- bytecode/Python compiler;
+- a new compiler/runtime subsystem;
+- feature-parity work justified only by “PyTorch has it”.
+
+If integration exposes a missing major mechanism, document it as a future limitation rather than silently expanding v1.0.
+
+## 6. Architecture ownership rules
+
+Preserve these existing boundaries.
 
 ### Tensor / memory
 
-- Storage owns backend allocation and shared version counter;
-- shape/stride/storage_offset define Tensor layout;
-- views may alias Storage;
-- `view`, `reshape`, and `contiguous` have different allocation semantics;
-- in-place changes participate in version safety.
+```text
+Storage owns allocation + shared version counter
+Tensor owns shape / stride / offset / requires_grad metadata
+Device describes logical placement
+```
+
+Tensor memory semantics must not move into compiler/runtime planning.
 
 ### Dispatcher / backend
 
-- logical operators route through schema/registry/Dispatcher;
-- Autograd/NoGrad are policy keys;
-- CPU/EDU are backend keys;
-- redispatch removes handled keys rather than recursively re-entering the same policy;
-- mixed-device input fails explicitly.
+```text
+logical operator
+   ↓
+Dispatcher policy
+   ↓
+backend kernel
+```
+
+Backend kernels must not depend on Module, Optimizer, DataLoader, compiler cache or DDP policy.
 
 ### Autograd
 
-- eager backward is owned by `AutogradEngine`;
-- graph lifetime and saved-value version safety are distinct;
-- retain_graph / retain_grad / hooks remain separate concepts;
-- custom Function uses the same Engine lifecycle;
-- no fake higher-order-gradient claim.
+`AutogradEngine` owns eager backward graph execution. Saved-value version checks and graph lifetime are separate concerns. Do not create a second autograd runtime inside compiler integration tests.
 
-### Training / distributed
+### Training/runtime
 
-- checkpoint includes model/optimizer/scheduler/RNG/progress state;
-- deterministic resume is tested;
-- DDP simulation separates local gradient readiness from explicit synchronization;
-- optimizer remains unaware of DDP communication.
+Module/Optimizer/Data compose above Tensor/Dispatcher. Checkpoint/RNG/progress state is runtime state, not a Tensor-kernel concern.
+
+### Distributed
+
+DDP/Reducer/ProcessGroup simulate synchronization outside optimizer algorithms and numerical kernels.
 
 ### Compiler
 
-- capture records outer logical Dispatcher operations, not redispatch internals;
-- capture keeps observed Tensor objects alive so Python id reuse cannot merge Graph Values;
-- Graph IR does not bake in backend/Autograd decisions;
-- guard failure is an inspectable specialization miss;
-- GraphBreak never installs partial cache state;
-- AOT backward uses explicit saved Values and gradient inputs;
-- source Graphs are not mutated by lowering passes;
-- pointwise fusion remains conservative;
-- ExternalOps still execute through Dispatcher.
+```text
+capture
+  ↓
+Graph IR
+  ↓
+guards/cache
+  ↓
+AOT differentiation
+  ↓
+analysis/transforms/lowering
+  ↓
+LoweredProgram
+```
 
-### Runtime planning
+Compiler passes must not mutate source Graphs unless the API explicitly promises mutation.
 
-- benchmark/profiling results are measurement, not correctness assumptions;
-- Graph output and AOT retained Values escape normal temporary lifetime;
-- buffer reuse requires explicit compatible non-overlapping lifetimes;
-- only safe pointwise-fusion temporaries use planner-owned output buffers in v0.15;
-- `LoweredProgram` describes work; `ExecutionPlan` describes runtime resource assignment;
-- `GraphInterpreter == LoweredExecutor == PlannedExecutor` is a required correctness chain.
+### Planned runtime
 
-## 5. Cross-layer rules
+```text
+LoweredProgram = what executes
+ExecutionPlan = runtime resource assignment
+```
 
-- separate policy from mechanism;
-- avoid circular core imports;
-- numerical kernels must not depend on Module/Optimizer/DataLoader/compiler policy;
-- Autograd policy stays outside backend numerical kernels;
-- compiler/runtime layers do not create a second Tensor architecture;
-- unsupported behavior fails explicitly;
-- historical reference executors remain correctness oracles for newer layers;
-- performance claims require repeated measurement.
+ExternalOps remain Dispatcher-owned. Planner-owned output buffers remain limited to explicitly safe pointwise temporaries.
 
-## 6. Testing contract
+## 7. Public API audit rules
 
-Every meaningful change should include, where applicable:
+When auditing exports:
 
-- happy path;
-- invariants/property tests;
-- error path;
-- numerical/reference validation;
-- integration proof;
-- full historical regression.
+- prefer stable learning concepts over implementation helpers;
+- do not remove a public name without checking repository docs/examples/tests;
+- do not rename merely to mimic PyTorch spelling;
+- internal/private helpers should not become public just to make the integrated example shorter;
+- integration examples should import from supported public module paths where such paths already exist.
 
-Run:
+Any API cleanup must have a compatibility rationale and tests where behavior changes.
+
+## 8. Integrated example rules
+
+`examples/19_integrated_architecture.py` must separate phases explicitly:
+
+```text
+training-time
+runtime/checkpoint state
+compiler-time
+planned runtime
+verification
+```
+
+Do not imply that graph compilation/checkpoint/DDP are all necessarily executed inside one production loop.
+
+The example should be deterministic, self-contained and require no external dataset/network download.
+
+## 9. PyTorch mapping rules
+
+`docs/PYTORCH_MAPPING.md` is conceptual correspondence only.
+
+Use phrasing such as:
+
+```text
+concept family
+educational analogue
+important simplification
+```
+
+Do not claim source equivalence, API parity, performance parity or production behavior.
+
+## 10. Testing contract
+
+Required v1.0 integration proofs should cover only meaningful cross-layer seams:
+
+```text
+Tensor / Dispatcher / Backend / Autograd
+Module / Optimizer / Runtime checkpoint
+Capture / Cache / AOT / Lowering / ExecutionPlan
+```
+
+Do not create one huge brittle test that duplicates the entire historical suite.
+
+Full regression command:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-Never claim a test count or validated state unless that exact code state ran successfully.
+Never claim a test count until the exact code state ran successfully.
 
-## 7. Documentation contract
+## 11. Documentation contract
 
-Review on every version/release:
+Review before release:
 
 ```text
 README.md
 version.md
 Agents.md
 MANIFEST.txt
-Plan.md on main
-relevant docs/*
-relevant example
+docs/ARCHITECTURE.md
+docs/ARCHITECTURE_V1.md
+docs/LEARNING_PATH.md
+docs/ROADMAP.md
+docs/PYTORCH_MAPPING.md
+examples/19_integrated_architecture.py
 ```
 
-## 8. Frozen branch rule
+`Plan.md` remains canonical on `main`; the v1.0 branch uses `version.md` + this `Agents.md` for release scope.
 
-Frozen branches may receive only:
+Historical docs may preserve historical “next version” statements if clearly version-specific. Canonical current docs must not be stale.
 
-- documentation corrections;
-- tests clarifying already-promised behavior;
-- narrow bug fixes inside that historical version boundary.
-
-Future development begins from latest `main`.
-
-## 9. v1.0 directive — integrate, do not expand
-
-The 0.x sequence already contains the major planned mechanisms. v1.0 should not introduce another large subsystem merely to increase scope.
-
-Central question:
-
-> Can the complete mini-pytorch stack now be explained, exercised and validated as one coherent architecture?
-
-Required v1.0 work:
+## 12. Release workflow
 
 ```text
-architecture audit
-      ↓
-API / naming consistency audit
-      ↓
-cross-version documentation reconciliation
-      ↓
-one end-to-end integrated example
-      ↓
-mini-pytorch ↔ real PyTorch subsystem map
-      ↓
-full regression / release snapshot
+active v1.0
+   ↓
+architecture/docs/tests/example complete
+   ↓
+package version 1.0.0
+   ↓
+full regression
+   ↓
+exact release-candidate HEAD CI green
+   ↓
+freeze version.md + Agents.md
+   ↓
+exact frozen HEAD CI green
+   ↓
+fast-forward v1.0 into main
+   ↓
+restore canonical integrated README / Agents / Plan
+   ↓
+exact main HEAD CI green
 ```
 
-### v1.0 allowed work
+No future work begins from a stale pre-integration branch.
 
-- small API cleanup where it improves consistency without hiding learning boundaries;
-- missing integration tests across existing subsystems;
-- documentation/diagram improvements;
-- one coherent example that connects eager, training, compiler and runtime layers;
-- subsystem mapping to real PyTorch concepts;
-- release metadata and final validation.
+## 13. Definition of Done
 
-### v1.0 non-goals
+v1.0 is complete only when:
 
-- new accelerator backend;
-- Triton/CUDA codegen;
-- symbolic shape engine;
-- production allocator;
-- production DDP/NCCL;
-- new compiler family;
-- API feature-parity sprint.
-
-## 10. v1.0 Definition of Done
-
-v1.0 freezes only when:
-
-1. architecture docs match actual source boundaries;
-2. public learning APIs/names are internally consistent;
-3. an end-to-end example crosses the major layers without hidden shortcuts;
-4. PyTorch subsystem mapping is explicit and caveated;
-5. historical version branches remain understandable;
-6. all tests are green at exact release HEAD;
-7. README/version/Agents/Plan/MANIFEST are release-ready;
-8. no unsupported production/performance claim is made.
-
-## 11. Current directive
-
-`main` contains completed **v0.15 Runtime / Performance Mechanics**.
-
-Next milestone: **v1.0 — Integrated Architecture**.
+- architecture ownership is documented from actual code;
+- API/naming audit is complete;
+- integrated example runs without external downloads;
+- cross-layer tests pass;
+- PyTorch mapping is explicit and caveated;
+- docs agree on terminology and baseline;
+- package reports `1.0.0`;
+- release-candidate exact HEAD CI is green;
+- frozen exact HEAD CI is green;
+- validated tree is integrated into `main`;
+- final main exact HEAD CI is green.
