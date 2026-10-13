@@ -1,16 +1,17 @@
-# Agents.md — mini-pytorch v0.14 Development Contract
+# Agents.md — mini-pytorch v0.14 Frozen Contract
 
-> Read before modifying branch `v0.14`.
+> Historical learning snapshot. Read before changing branch `v0.14`.
 
 ## Branch identity
 
 - Branch: `v0.14`
 - Previous: `v0.13`
 - Theme: Lowering / Fusion / Inductor-like Concepts
-- Status: active until exact final-head CI passes
-- Starting baseline: 206 tests
+- Status: **frozen historical learning snapshot**
+- Package: `0.14.0`
+- Validated baseline: **221 tests / OK**
 
-## Required architecture
+## Frozen architecture
 
 ```text
 Graph
@@ -21,117 +22,88 @@ analyze_graph
   ↓
 DCE / safe constant folding
   ↓
-fusion planning
+use-aware fusion planning
   ↓
 LoweredProgram
   ↓
 LoweredExecutor
 ```
 
-The v0.11 `GraphInterpreter` remains the semantic reference executor. The v0.13 eager/AOT gradient proofs remain mandatory regression oracles.
+`GraphInterpreter` remains the semantic reference. v0.13 explicit forward/backward Graphs remain the gradient correctness reference.
 
-## Core rules
+## Frozen invariants
 
-- never mutate the source Graph during compiler passes;
-- transformations must rebuild deterministic Graph/Value/Node identities;
-- explicit analysis owns producer/users/use-count/output-liveness data;
-- DCE may remove only operations treated as pure by this educational compiler;
-- constant folding is restricted to safe pure constant-only expressions;
-- do not fold grad-requiring Tensor constants in v0.14;
-- pointwise fusion is limited to `add`, `mul`, `relu`;
-- fusion must respect real dependency and use-count structure, not mere adjacency;
-- matmul/reduction/conv/pool/AOT helper ops are fusion barriers;
-- unsupported but valid graph nodes remain `ExternalOp` where safe;
-- fused numerical execution is a reference NumPy mechanism, not generated code;
-- CPU/EDU device identity must survive lowering/execution;
-- lowering must work on both AOT forward and AOT backward Graphs;
-- no performance claims from node-count reduction alone.
+- compiler passes do not mutate source Graphs;
+- transformed Graphs use deterministic rebuilt Value/Node ids;
+- analysis explicitly records producer/users/use-count/output/liveness;
+- DCE assumes only the documented pure logical-op model;
+- constant folding is restricted to pure constant-only add/mul/relu;
+- grad-requiring constants/outputs are not folded;
+- pointwise fusion is limited to add/mul/relu;
+- fusion respects dependency and occurrence-level use-count structure;
+- matmul/reduction/conv/pool/AOT helper operators remain barriers;
+- `LoweredProgram` consists of `ExternalOp` and `PointwiseFusion` instructions;
+- ExternalOps execute through Dispatcher;
+- PointwiseFusion uses readable NumPy reference execution and preserves CPU/EDU logical device identity;
+- `LoweredExecutor` executes under `no_grad` and is first-order;
+- source-to-lowered Value mapping preserves the v0.13 saved-value ABI;
+- the same lowering pipeline accepts AOT forward and backward Graphs;
+- reduced node/instruction count is not a performance claim.
 
-## Lowered representation
+## Validated behavior
 
-Expected educational representation:
+The 221-test baseline covers:
 
-```text
-LoweredProgram
-├── ExternalOp
-└── PointwiseFusion
-      ├── external input Value ids
-      ├── ordered fused nodes
-      └── output Value ids
-```
+- analysis/liveness/use counts;
+- deterministic normalization;
+- DCE;
+- constant folding and its grad-safety boundary;
+- fusion chains and branch barriers;
+- fusion barriers;
+- CPU/EDU lowered execution;
+- external Dispatcher execution;
+- deterministic stats/explain output;
+- AOT forward saved-value remapping;
+- lowered backward-Graph gradient equality;
+- malformed graph / input-count / mixed-device errors;
+- every historical regression from v0.1-v0.13.
 
-`PointwiseFusion` may evaluate its small expression DAG with NumPy, but it must not become a second Tensor/backend architecture.
+## Historical branch rule
 
-## Required passes
+Do not add future runtime/performance features to this branch.
 
-```text
-normalize_graph(graph)
-analyze_graph(graph)
-eliminate_dead_code(graph)
-fold_constants(graph)
-plan_fusions(graph)
-lower_graph(graph)
-```
+Allowed changes after freeze are limited to:
 
-## Testing contract
+- documentation corrections;
+- tests clarifying behavior already promised by v0.14;
+- narrow bug fixes that remain strictly inside the v0.14 contract.
 
-Required families:
+The following belong to later branches:
 
-- clone/normalization does not mutate source;
-- producer/users/use-count/liveness;
-- dead branch removal;
-- safe constant folding;
-- branch prevents unsafe fusion;
-- pointwise chain fusion;
-- reduction/matmul barriers;
-- deterministic lowering/explain output;
-- input-count and malformed-graph failures;
-- CPU/EDU execution;
-- GraphInterpreter vs LoweredExecutor equality;
-- AOT forward lowering;
-- AOT backward lowering / gradient equality;
-- all historical 206 tests remain green.
-
-Run:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-## Documentation contract
-
-Before freeze update:
-
-```text
-README.md
-version.md
-Agents.md
-MANIFEST.txt
-docs/LOWERING_FUSION.md
-examples/17_lowering_fusion.py
-tests/test_lowering.py
-```
-
-## Explicit non-goals
-
-- production TorchInductor;
-- Triton/CUDA/C++ code generation;
-- GPU scheduling/autotuning;
+- profiling and benchmark framework;
+- Value lifetime intervals;
+- memory/buffer planning;
+- buffer reuse / preallocation;
+- generated kernels;
 - symbolic shapes;
-- arbitrary mutation/alias reasoning;
-- memory planning/buffer reuse;
-- benchmark-backed performance optimization.
+- runtime scheduling / autotuning.
 
-## Definition of Done
+## Important files
 
-Freeze only after:
+```text
+version.md
+README.md
+docs/LOWERING_FUSION.md
+mini_pytorch/compiler/analysis.py
+mini_pytorch/compiler/lowering.py
+tests/test_lowering.py
+examples/17_lowering_fusion.py
+```
 
-- analysis data model exists;
-- normalization/DCE/constant folding are correct and source-preserving;
-- explicit deterministic fusion groups exist;
-- `LoweredProgram` and `LoweredExecutor` exist;
-- forward and backward AOT Graphs lower correctly;
-- stats/explain surface exists;
-- tests/docs/example/manifest are complete;
-- exact final `v0.14` HEAD CI is green;
-- validated tree is integrated into `main`.
+## Next architectural dependency
+
+The next version is **v0.15 — Runtime / Performance Mechanics**.
+
+Central question:
+
+> Once a correct LoweredProgram exists, how should the runtime measure its execution, reason about Value lifetimes and allocations, and reuse memory safely based on evidence rather than assumption?
