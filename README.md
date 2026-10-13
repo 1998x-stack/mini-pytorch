@@ -1,105 +1,147 @@
-# mini-pytorch v0.11 — Graph IR / Eager-to-Graph Capture
+# mini-pytorch — Architecture-Driven PyTorch Learning Project
 
-> 把 eager Tensor 执行第一次变成显式、可检查、可重放的 `Value / Node / Graph`。
+> 用可运行的 Python / NumPy 代码，按真实 PyTorch 的架构依赖顺序，一层一层拆开核心机制。
 
-**Package version:** `0.11.0`
+**Latest integrated version:** `v0.11.0`
 
-**Validated target:** full regression + Graph IR capture/replay tests
+**Current milestone:** Graph IR / Eager-to-Graph Capture
 
-## 1. 本版本核心问题
+**Next milestone:** `v0.12` Guards / Graph Cache / Recompile
 
-到 v0.10，mini-pytorch 已经有：
+mini-pytorch 不追求复制完整 PyTorch API，而是持续回答一条架构问题链：
 
 ```text
-Tensor
-  ↓
-Dispatcher
-  ↓
-Autograd / Backend
-  ↓
-Kernel
+Tensor 是什么？
+      ↓
+Autograd 为什么能自动求导？
+      ↓
+Optimizer / Scheduler 如何组织训练动力学？
+      ↓
+Dataset / Sampler / DataLoader 为什么分层？
+      ↓
+Storage / stride / view 为什么重要？
+      ↓
+logical operator 为什么需要 Dispatcher？
+      ↓
+复杂 NN operator 如何建立在 Dispatcher 上？
+      ↓
+Device / Backend 如何与 Tensor 分离？
+      ↓
+AutogradEngine 如何管理 graph lifetime / hooks？
+      ↓
+完整训练状态如何 checkpoint 并确定性恢复？
+      ↓
+多个 replica 如何同步 gradient？
+      ↓
+eager execution 如何变成 Graph IR？
+      ↓
+Graph 在什么条件下可以安全复用？
 ```
 
-但一次 Python eager 执行完成后，框架并没有一个独立的数据结构描述：
+## 1. 版本学习地图
+
+| Version | 核心主题 | 最重要的问题 |
+|---|---|---|
+| `v0.1` | Tensor + Dynamic Autograd | `backward()` 如何自动求导？ |
+| `v0.2` | Optimizer + LR Scheduler | 优化状态为什么独立于模型？ |
+| `v0.3` | Dataset + Sampler + DataLoader + MNIST | 数据为什么分层？ |
+| `v0.4` | Storage + stride + views + version counter | Tensor 为什么不等于 ndarray？ |
+| `v0.5` | Operator Schema + Dispatcher + Redispatch | 一个 operator 为什么需要路由层？ |
+| `v0.6` | CNN Operator Stack | 非平凡 NN op 如何复用 Dispatcher？ |
+| `v0.7` | Device / Backend | 多 backend 为什么不能靠散落的 `if device`？ |
+| `v0.8` | Advanced Autograd Engine | graph lifetime / hooks / retain_graph 如何工作？ |
+| `v0.9` | Runtime / Checkpoint / RNG | 怎样暂停训练并确定性继续？ |
+| `v0.10` | Distributed / DDP Concepts | 多个 replica 如何同步 gradient？ |
+| `v0.11` | Graph IR / Eager Capture | eager operator history 如何表示成显式图？ |
+| `v0.12` | Guards / Graph Cache / Recompile | 一个 Graph 什么时候仍然有效？ |
+
+每个历史 version branch 都保留：
 
 ```text
-到底执行了哪些 logical operators？
-它们之间的数据依赖是什么？
-如果给一组新的输入，能不能按同样的 operator graph 重放？
+README.md   → 本版本学习入口
+version.md  → 与上一版本的精确 delta
+Agents.md   → 本版本工程边界 / frozen contract
 ```
 
-v0.11 新增：
+`main` 始终代表最新完成并验证的框架状态。
+
+## 2. 当前完整架构
 
 ```text
+                               Tensor
+                   shape / stride / dtype / device
+                                 │
+                                 ▼
+                               Storage
+                 backend allocation + VersionCounter
+                                 │
+                                 ▼
+                           logical operator
+                                 │
+                                 ▼
+                             Dispatcher
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                  ▼
+           Autograd            NoGrad           CPU / EDU
+              │                                      │
+              └──────────── redispatch ──────────────┘
+                                 │
+                                 ▼
+                         numerical kernel
+                                 │
+                                 ▼
+                           Tensor / GradFn
+                                 │
+                                 ▼
+                           AutogradEngine
+
+Dataset → Sampler → BatchSampler → DataLoader
+
+Module / Parameter → Optimizer → LR Scheduler
+                              │
+                        Training Runtime
+                              │
+                   RNG + CheckpointState
+
+DistributedSampler
+      ↓
+DDP wrapper → Reducer → GradientBucket → ProcessGroup
+
 Python eager function
       ↓
-Dispatcher
-      ├── normal eager execution
+Dispatcher.dispatch
+      ├── normal execution
       └── capture observer
               ↓
-          Graph IR
-      ┌───────┼───────┐
-      ▼       ▼       ▼
-    Value    Node    outputs
-              │
-              ▼
-      GraphInterpreter
-              │
-              ▼
-          Dispatcher
+       Value / Node / Graph
+              ↓
+       GraphInterpreter
+              ↓
+          Dispatcher replay
 ```
 
-关键原则：
+## 3. v0.11 最新能力
 
-> **Graph 不实现数学；Graph 只表示 logical program。**
+### Explicit Graph IR
 
-## 2. 相比 v0.10 的变化
-
-v0.10：
-
-```text
-多个 replica 的 local gradients
-        ↓
-Reducer / ProcessGroup
-        ↓
-同步梯度
-```
-
-v0.11：
-
-```text
-一次 eager operator execution
-        ↓
-显式 Graph IR
-        ↓
-再次解释执行
-```
-
-项目从 eager runtime 正式进入 compiler representation 路线。
-
-## 3. 新增目录
+新增：
 
 ```text
 mini_pytorch/compiler/
-├── __init__.py
 ├── ir.py
 ├── capture.py
 └── interpreter.py
 ```
 
-新增：
+IR 核心对象：
 
 ```text
-tests/test_graph_ir.py
-docs/GRAPH_IR.md
-examples/14_graph_capture.py
+Value
+Node
+Graph
 ```
 
-## 4. Value / Node / Graph
-
-### Value
-
-代表 graph 中的一条数据边：
+Value kinds：
 
 ```text
 input
@@ -107,64 +149,13 @@ constant
 intermediate
 ```
 
-Tensor metadata：
-
-```text
-shape
-dtype
-device
-requires_grad
-```
-
-### Node
-
-代表一次 logical operator application：
-
-```text
-operator
-args
-kwargs
-outputs
-```
-
-例如：
-
-```text
-aten::mul.Tensor
-aten::add.Tensor
-aten::relu.default
-aten::sum.default
-```
-
-### Graph
-
-拥有：
-
-```text
-inputs
-values
-nodes
-outputs
-```
-
-Value 和 Node ID 按 capture 顺序稳定增长：
-
-```text
-%v0, %v1, %v2 ...
-node0, node1, node2 ...
-```
-
-## 5. Capture API
+### Capture
 
 ```python
-from mini_pytorch import Tensor
 from mini_pytorch.compiler import capture
 
-x = Tensor([1.0, 2.0], requires_grad=True)
-y = Tensor([3.0, 4.0], requires_grad=True)
-
 captured = capture(
-    lambda a, b: ((a * b) + a).relu().sum(),
+    lambda x, y: ((x * y) + x).relu().sum(),
     x,
     y,
 )
@@ -172,58 +163,25 @@ captured = capture(
 print(captured.graph.format())
 ```
 
-capture 本身仍然执行普通 eager forward。
+Capture 是普通 eager execution + observation，不是 symbolic-only fake run。
 
-因此返回：
+### Dispatcher observation boundary
 
-```text
-CapturedGraph
-├── graph
-└── eager_output
-```
-
-不是 symbolic-only fake execution。
-
-## 6. 为什么 observer 放在 Dispatcher.dispatch
-
-一次带梯度的乘法实际可能走：
-
-```text
-aten::mul.Tensor
-      ↓
-Autograd dispatch
-      ↓
-redispatch
-      ↓
-CPU / EDU
-```
-
-IR 只应看到：
+Graph 只记录 logical operator：
 
 ```text
 aten::mul.Tensor
 ```
 
-所以 capture hook 只放在：
+不会把：
 
 ```text
-Dispatcher.dispatch
+Autograd → redispatch → CPU
 ```
 
-而不放在：
+重复记录成多节点。
 
-```text
-Dispatcher.redispatch
-```
-
-从而避免：
-
-```text
-一个 logical op
-被重复记录成多节点
-```
-
-## 7. GraphInterpreter
+### GraphInterpreter
 
 ```python
 from mini_pytorch.compiler import GraphInterpreter
@@ -231,252 +189,138 @@ from mini_pytorch.compiler import GraphInterpreter
 out = GraphInterpreter(captured.graph)(new_x, new_y)
 ```
 
-执行过程：
-
-```text
-bind inputs
-    ↓
-materialize constants
-    ↓
-Node 0 → Dispatcher
-    ↓
-Node 1 → Dispatcher
-    ↓
-...
-    ↓
-resolve graph output
-```
-
-Interpreter **不会直接调用 CPU/EDU kernel**。
-
-因此 replay 自动继承：
-
-```text
-Autograd
-NoGrad
-CPU / EDU
-DispatchKey
-GradFn
-AutogradEngine
-```
-
-## 8. Forward + Backward equivalence
-
-v0.11 的中央 correctness proof：
-
-```text
-fresh inputs A
-    ↓
-eager Python function
-    ↓
-output_eager
-
-fresh inputs B with same values
-    ↓
-GraphInterpreter
-    ↓
-output_graph
-```
-
-要求：
-
-```text
-output_eager == output_graph
-```
-
-随后分别：
-
-```text
-output_eager.backward()
-output_graph.backward()
-```
-
-要求 graph inputs 的 gradients 同样一致。
-
-这证明 replay 没有绕开原来的 Autograd 架构。
-
-## 9. Dispatch policy 不固化在 Graph 中
-
-如果 trace 在：
-
-```python
-with no_grad():
-    captured = capture(...)
-```
-
-trace 时可能是：
-
-```text
-{NoGrad, CPU}
-```
-
-Graph 中仍只保存：
-
-```text
-aten::mul.Tensor
-```
-
-以后用 `requires_grad=True` Tensor replay：
+Replay 仍然走：
 
 ```text
 Dispatcher
-→ {Autograd, CPU}
+→ runtime DispatchKeySet
+→ Autograd / NoGrad
+→ CPU / EDU
 ```
 
-仍然会构造 GradFn。
+因此 Graph IR 不固化 trace 时的 backend/policy 决策。
 
-因此：
+### Forward / backward equivalence
+
+v0.11 的中央证明：
 
 ```text
-IR = logical semantics
-DispatchKeySet = runtime policy
+ordinary eager output == GraphInterpreter output
 ```
 
-## 10. Tensor constant
-
-闭包中的 leaf Tensor 可以被 capture by value：
-
-```python
-scale = Tensor([2.0, 3.0])
-
-graph = capture(
-    lambda x: x * scale,
-    Tensor([1.0, 1.0]),
-).graph
-```
-
-`scale` 变成：
+并验证：
 
 ```text
-constant Value
+eager input gradients == replay input gradients
 ```
 
-Graph 保存独立数据副本，不继续 alias 原对象。
+当前完整回归：
 
-完整 Module/Parameter lifting 不属于 v0.11。
+```text
+176 tests
+OK
+```
 
-## 11. GraphBreak
+### Explicit GraphBreak
 
-以下路径目前不是 Dispatcher logical op：
+如果 dynamic Tensor 来自尚未被 Dispatcher observer 覆盖的 eager path，例如当前 `exp()` direct Function path：
 
 ```python
 y = x.exp()
-```
-
-如果继续：
-
-```python
 z = y + x
 ```
 
-capture 会发现 `y` 是一个未记录的 dynamic non-leaf Tensor。
-
-如果把它偷偷当 constant：
-
-```text
-trace-time y
-被永久冻结
-```
-
-Graph 就错了。
-
-所以 v0.11 明确抛：
+capture 会显式抛出：
 
 ```text
 GraphBreakError
 ```
 
-原则：
+而不是把 trace-time `y` 错误冻结成常量。
 
-> **宁愿显式 graph break，也不能静默 miscapture。**
-
-## 12. 当前可捕获 logical ops
-
-凡是走现有 Dispatcher 的 operator 都可以被 observer 记录，目前包括：
+## 4. 推荐源码学习顺序
 
 ```text
-aten::add.Tensor
-aten::mul.Tensor
-aten::matmul.default
-aten::relu.default
-aten::sum.default
-aten::conv2d.default
-aten::max_pool2d.default
+v0.1  autograd.py → tensor.py → ops.py
+v0.2  optim/optimizer.py → optim/* → lr_scheduler.py
+v0.3  data/dataset.py → sampler.py → dataloader.py
+v0.4  storage.py → tensor.py → docs/TENSOR_MEMORY.md
+v0.5  dispatcher.py → operator_registry.py → docs/DISPATCHER.md
+v0.6  kernels.py → nn_ops.py → nn/* → docs/CNN_OPERATORS.md
+v0.7  device.py → backend.py → docs/DEVICE_BACKEND.md
+v0.8  autograd_engine.py → docs/AUTOGRAD_ENGINE.md
+v0.9  runtime/* → docs/TRAINING_RUNTIME.md
+v0.10 distributed/* → docs/DISTRIBUTED_DDP.md
+v0.11 compiler/ir.py → capture.py → dispatcher.py → interpreter.py → docs/GRAPH_IR.md
 ```
 
-`exp/log` 等仍为 direct Function path，跨入 captured dataflow 时会 graph break。
+教学示例：
 
-## 13. CPU / EDU
-
-Replay 重新走 Dispatcher，因此 EDU graph 仍走 EDU registration。
-
-测试覆盖：
-
-```text
-capture on EDU
-      ↓
-GraphInterpreter
-      ↓
-EDU output
-      ↓
-backward
+```bash
+python examples/07_tensor_memory.py
+python examples/08_dispatcher.py
+python examples/09_cnn_mnist.py
+python examples/10_device_backend.py
+python examples/11_autograd_engine.py
+python examples/12_checkpoint_resume.py
+python examples/13_ddp_simulation.py
+python examples/14_graph_capture.py
 ```
 
-## 14. 推荐阅读顺序
-
-```text
-mini_pytorch/compiler/ir.py
-        ↓
-mini_pytorch/compiler/capture.py
-        ↓
-mini_pytorch/dispatcher.py
-        ↓
-mini_pytorch/compiler/interpreter.py
-        ↓
-tests/test_graph_ir.py
-        ↓
-docs/GRAPH_IR.md
-        ↓
-examples/14_graph_capture.py
-```
-
-## 15. 快速运行
+完整回归：
 
 ```bash
 pip install -e .
 python -m unittest discover -s tests -v
-python examples/14_graph_capture.py
 ```
 
-## 16. Explicit non-goals
+## 5. 当前明确非目标
 
-v0.11 不实现：
+截至 v0.11，项目刻意还没有实现：
 
+- real CUDA / NCCL；
+- true higher-order Autograd；
+- real multi-process/network DDP；
 - Python bytecode/frame tracing；
-- dynamic control-flow capture；
-- shape/device guards；
-- graph cache；
-- automatic recompile；
-- full Module/Parameter lifting；
-- AOT backward graph；
+- symbolic control flow；
+- shape/device/dtype guards；
+- graph cache / automatic recompile；
+- AOTAutograd；
 - graph optimization/fusion；
-- lowering/codegen；
+- compiler lowering/codegen；
 - Inductor/Triton。
 
-## 17. 下一版本
+这些会按架构依赖顺序进入后续版本。
 
-`v0.12`：**Guards / Graph Cache / Recompile**。
+## 6. 下一版：v0.12 Guards / Graph Cache / Recompile
 
 v0.11 回答：
 
+> Graph 是什么？
+
+v0.12 要回答：
+
+> 哪些 runtime assumptions 让这个 Graph 仍然有效？如果输入 shape/dtype/device/grad-mode 等发生变化，应该 cache hit、cache miss，还是重新 capture？
+
+目标结构：
+
 ```text
-Graph 是什么？
+Python callable
+      ↓
+runtime inputs
+      ↓
+GuardSet / Signature
+      ↓
+GraphCache lookup
+   ┌───────┴────────┐
+   ▼                ▼
+hit               miss
+   │                 │
+GraphInterpreter   capture
+   │                 ↓
+   │             new Graph
+   │                 ↓
+   └──────────── cache entry
 ```
 
-v0.12 将回答：
-
-```text
-这个 Graph 在什么条件下仍然有效？
-什么时候 cache hit？
-什么时候必须重新 capture / compile？
-```
+详细任务见 `Plan.md`。
