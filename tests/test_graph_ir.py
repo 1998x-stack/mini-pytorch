@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from mini_pytorch import Tensor, dispatcher
+from mini_pytorch import Tensor, dispatcher, functional, no_grad
 from mini_pytorch.compiler import GraphBreakError, GraphInterpreter, capture
 
 
@@ -128,6 +128,46 @@ class TestGraphInterpreter(unittest.TestCase):
         self.assertEqual(str(out.device), "edu")
         out.backward()
         np.testing.assert_allclose(x.grad, [6.0, 8.0])
+
+    def test_matmul_replay(self):
+        graph = capture(
+            lambda a, b: (a @ b).sum(),
+            Tensor([[1.0, 2.0]], requires_grad=True),
+            Tensor([[3.0], [4.0]], requires_grad=True),
+        ).graph
+        a = Tensor([[2.0, 5.0]], requires_grad=True)
+        b = Tensor([[7.0], [11.0]], requires_grad=True)
+        out = GraphInterpreter(graph)(a, b)
+        np.testing.assert_allclose(out.data, 69.0)
+        out.backward()
+        np.testing.assert_allclose(a.grad, [[7.0, 11.0]])
+        np.testing.assert_allclose(b.grad, [[2.0], [5.0]])
+
+    def test_conv2d_replay_uses_captured_tensor_constants(self):
+        weight = Tensor(np.ones((1, 1, 2, 2)), requires_grad=True)
+        bias = Tensor([0.5], requires_grad=True)
+        trace_input = Tensor(np.arange(9.0).reshape(1, 1, 3, 3), requires_grad=True)
+        graph = capture(
+            lambda x: functional.conv2d(x, weight, bias, stride=1, padding=0),
+            trace_input,
+        ).graph
+        x = Tensor(np.ones((1, 1, 3, 3)), requires_grad=True)
+        out = GraphInterpreter(graph)(x)
+        np.testing.assert_allclose(out.data, np.full((1, 1, 2, 2), 4.5))
+        out.sum().backward()
+        self.assertIsNotNone(x.grad)
+
+    def test_trace_dispatch_policy_is_not_baked_into_ir(self):
+        trace_x = Tensor([1.0, 2.0], requires_grad=True)
+        with no_grad():
+            graph = capture(lambda x: (x * x).sum(), trace_x).graph
+        self.assertFalse(capture(lambda x: x + x, Tensor([1.0])).eager_output.requires_grad)
+
+        runtime_x = Tensor([3.0, 4.0], requires_grad=True)
+        out = GraphInterpreter(graph)(runtime_x)
+        self.assertTrue(out.requires_grad)
+        out.backward()
+        np.testing.assert_allclose(runtime_x.grad, [6.0, 8.0])
 
     def test_wrong_input_count_fails(self):
         graph = capture(lambda x: x + x, Tensor([1.0])).graph
