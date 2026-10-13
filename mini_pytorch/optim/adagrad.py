@@ -16,6 +16,14 @@ class Adagrad(Optimizer):
             raise ValueError("eps must be positive")
         super().__init__(params, defaults={"lr": lr, "lr_decay": lr_decay, "weight_decay": weight_decay, "initial_accumulator_value": initial_accumulator_value, "eps": eps})
 
+    def _validate_param_group(self, group) -> None:
+        if group["lr"] < 0 or group["lr_decay"] < 0 or group["weight_decay"] < 0:
+            raise ValueError("lr, lr_decay, and weight_decay must be non-negative")
+        if group["initial_accumulator_value"] < 0:
+            raise ValueError("initial_accumulator_value must be non-negative")
+        if group["eps"] <= 0:
+            raise ValueError("eps must be positive")
+
     def step(self) -> None:
         for group in self.param_groups:
             lr, lr_decay = group["lr"], group["lr_decay"]
