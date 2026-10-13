@@ -17,7 +17,7 @@ class Optimizer:
     weight decay values, or other hyperparameters without changing model code.
 
     Subclasses generally only need to:
-      1. validate their hyperparameters,
+      1. validate group hyperparameters in ``_validate_param_group()``,
       2. call ``super().__init__(params, defaults=...)``, and
       3. implement ``step()``.
 
@@ -41,6 +41,14 @@ class Optimizer:
                 self.add_param_group(group)
         else:
             self.add_param_group({"params": params})
+
+    def _validate_param_group(self, group: Dict[str, Any]) -> None:
+        """Validate one fully-normalized parameter group.
+
+        Concrete optimizers override this hook so constructor defaults, explicit
+        group overrides, later ``add_param_group`` calls, and checkpoint restore
+        all share the same mathematical configuration contract.
+        """
 
     def add_param_group(self, group: Dict[str, Any]) -> None:
         if "params" not in group:
@@ -68,6 +76,7 @@ class Optimizer:
         normalized = dict(self.defaults)
         normalized.update({k: v for k, v in group.items() if k != "params"})
         normalized["params"] = params
+        self._validate_param_group(normalized)
         self.param_groups.append(normalized)
 
     def zero_grad(self, set_to_none: bool = True) -> None:
@@ -190,11 +199,15 @@ class Optimizer:
             if len(current_params) != len(group_indices):
                 raise ValueError("loaded state has a different parameter-group size")
 
+            options = {k: deepcopy(v) for k, v in saved_group.items() if k != "params"}
+            candidate = dict(current_group)
+            candidate.update(options)
+            candidate["params"] = current_params
+            self._validate_param_group(candidate)
+
             current_flat.extend(current_params)
             saved_indices.extend(group_indices)
-            pending_group_options.append(
-                {k: deepcopy(v) for k, v in saved_group.items() if k != "params"}
-            )
+            pending_group_options.append(options)
 
         if len(set(saved_indices)) != len(saved_indices):
             raise ValueError("loaded optimizer state contains duplicate parameter indices")

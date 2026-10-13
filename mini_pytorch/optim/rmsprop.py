@@ -18,6 +18,18 @@ class RMSprop(Optimizer):
             raise ValueError("weight_decay and momentum must be non-negative")
         super().__init__(params, defaults={"lr": lr, "alpha": alpha, "eps": eps, "weight_decay": weight_decay, "momentum": momentum, "centered": centered})
 
+    def _validate_param_group(self, group) -> None:
+        if group["lr"] < 0:
+            raise ValueError("lr must be non-negative")
+        if not 0 <= group["alpha"] < 1:
+            raise ValueError("alpha must be in [0, 1)")
+        if group["eps"] <= 0:
+            raise ValueError("eps must be positive")
+        if group["weight_decay"] < 0 or group["momentum"] < 0:
+            raise ValueError("weight_decay and momentum must be non-negative")
+        if not isinstance(group["centered"], (bool, np.bool_)):
+            raise TypeError("centered must be bool")
+
     def step(self) -> None:
         for group in self.param_groups:
             lr, alpha, eps = group["lr"], group["alpha"], group["eps"]
