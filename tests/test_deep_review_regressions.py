@@ -79,6 +79,30 @@ class TestCrossEntropyHardening(unittest.TestCase):
         np.testing.assert_allclose(analytical, numerical, rtol=2e-6, atol=2e-7)
 
 
+class TestOperatorEdgeHardening(unittest.TestCase):
+    def test_power_zero_has_finite_zero_gradient_at_zero(self):
+        x = Tensor([0.0, 2.0, -3.0], requires_grad=True)
+        y = (x ** 0).sum()
+        self.assertEqual(float(y.item()), 3.0)
+        y.backward()
+        np.testing.assert_array_equal(x.grad, np.zeros(3))
+        self.assertTrue(np.all(np.isfinite(x.grad)))
+
+    def test_transpose_rejects_out_of_range_dimensions(self):
+        x = Tensor(np.arange(6.0).reshape(2, 3), requires_grad=True)
+        with self.assertRaisesRegex(IndexError, "dimension out of range"):
+            x.transpose(2, 0)
+        with self.assertRaisesRegex(IndexError, "dimension out of range"):
+            x.transpose(-3, 0)
+
+        valid = x.transpose(-1, -2)
+        self.assertEqual(valid.shape, (3, 2))
+
+        scalar = Tensor(1.0)
+        with self.assertRaisesRegex(IndexError, "at least one dimension"):
+            scalar.transpose(0, 0)
+
+
 class TestProcessGroupLifetimeHardening(unittest.TestCase):
     def test_completed_collective_slots_are_reclaimed_after_all_ranks_read(self):
         groups = create_process_group(3)
