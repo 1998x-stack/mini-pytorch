@@ -1,21 +1,17 @@
-# Agents.md — mini-pytorch v0.10 Development Contract
+# Agents.md — mini-pytorch v0.10 Frozen Branch Contract
 
-> Read this file before modifying branch `v0.10`.
+> Read this file before modifying the frozen `v0.10` branch.
 
 ## Branch identity
 
 - Branch: `v0.10`
 - Previous version: `v0.9`
 - Primary mental model: **Distributed / DDP Concepts**
-- Status: active development
-- Target package version: `0.10.0`
-- Previous validated baseline: `140/140 tests passed`
+- Status: **frozen historical learning snapshot**
+- Package version: `0.10.0`
+- Validated baseline: `159/159 tests passed`
 
-## 1. Version question
-
-> If several replicas start from the same parameters but compute different local gradients, how are gradient-ready signals, buckets and collectives coordinated so all replicas apply the same optimizer update?
-
-## 2. Required architecture
+## 1. Frozen learning model
 
 ```text
 Dataset
@@ -28,212 +24,225 @@ Module replica
   ↓
 AutogradEngine
   ↓
-leaf Parameter hooks
+leaf gradient hooks
   ↓
 Reducer
   ↓
 GradientBucket(s)
   ↓
-ProcessGroup.all_reduce
+ProcessGroup.all_reduce(mean/sum)
   ↓
-averaged Parameter.grad
+synchronized Parameter.grad
   ↓
 Optimizer.step
 ```
 
-Layer ownership is mandatory:
+## 2. Historical branch rule
 
-- `DistributedSampler` owns index partitioning;
-- `ProcessGroup` owns collective semantics;
-- `Reducer` owns ready-state, flatten/unflatten and bucket logic;
-- `DistributedDataParallel` owns Module wrapping and hook registration;
-- Optimizer remains unaware of distributed synchronization;
-- Autograd formulas remain unchanged.
+This branch is frozen.
 
-## 3. Simulation model
+Allowed only:
 
-This branch must run on ordinary single-process CPU GitHub Actions.
+- documentation corrections;
+- tests clarifying promised v0.10 behavior;
+- narrowly scoped correctness fixes inside the distributed/DDP boundary.
 
-Do not pretend that sequential ranks are concurrent network workers.
+Forbidden:
 
-The required execution model is:
+- v0.11 Graph IR/compiler work;
+- production networking/NCCL/Gloo/MPI;
+- FSDP/ZeRO;
+- unrelated NN/operator expansion;
+- backporting later architectural milestones.
 
-```text
-rank 0 backward  → stage grads
-rank 1 backward  → stage grads
-...
-explicit synchronization barrier
-  ↓
-launch matching collectives for every rank
-  ↓
-complete in-process all-reduce
-  ↓
-write averaged grads back
-```
+## 3. Frozen ProcessGroup semantics
 
-A rank-local hook must never block waiting for another rank.
-
-## 4. ProcessGroup rules
-
-- `world_size >= 1`;
-- `0 <= rank < world_size`;
+- rank/world-size are explicit and validated;
 - rank-local ProcessGroup views share one in-process world;
-- each collective has a monotonically increasing sequence number per rank;
-- matching sequence numbers must agree on operation, shape and dtype;
-- `sum` and `mean` reductions are explicit;
-- duplicate/missing/mismatched participation must fail clearly;
-- a Work handle queried before all ranks submit raises an incomplete-collective error instead of deadlocking.
+- each rank advances a monotonically increasing collective sequence;
+- matching sequences must agree on op/shape/dtype;
+- supported reductions are `sum` and `mean`;
+- Work handles are incomplete until every rank submits;
+- incomplete Work access fails instead of blocking;
+- the implementation is a deterministic transport simulator, not real distributed execution.
 
-## 5. DistributedSampler rules
+Do not replace this with blocking rank-local waits inside sequential CI.
 
-- subclass/reuse the existing Sampler abstraction;
-- partition indices by rank after deterministic global ordering;
-- `set_epoch(epoch)` changes shuffled ordering deterministically;
-- `drop_last=False` pads to a divisible total size;
+## 4. Frozen DistributedSampler semantics
+
+- global deterministic ordering is created before partitioning;
+- rank partition is a strided slice of the global order;
+- `set_epoch` changes shuffle deterministically using seed + epoch;
+- `drop_last=False` pads to equal rank sample counts;
 - `drop_last=True` truncates to a divisible total size;
-- sampler does not fetch samples and DataLoader does not contain rank-specific logic.
+- the sampler selects indices only and does not fetch data.
 
-## 6. Reducer rules
+## 5. Frozen Reducer semantics
 
-Reducer receives the wrapped module's named Parameters in deterministic order.
+Reducer owns:
 
-Required behavior:
+- iteration readiness state;
+- trainable Parameter expectations;
+- reverse-registration bucket construction;
+- dtype/device bucket separation;
+- flatten offsets;
+- collective launch;
+- Work completion;
+- unflatten/write-back.
 
-- build deterministic buckets using a documented `bucket_cap_numel`;
-- register one leaf gradient hook per parameter through DDP;
-- stage the complete local gradient seen by that hook;
-- reject duplicate readiness in one iteration;
-- require all expected parameters to become ready before synchronization;
-- flatten using bucket entry order;
-- all-reduce the flat gradient buffer;
-- unflatten by recorded offset/shape;
-- replace local `Parameter.grad` with the reduced/averaged value;
-- preserve dtype/shape/device identity of Parameter objects.
+Every expected trainable Parameter must become ready exactly once per supported iteration.
 
-Unused-parameter discovery is a non-goal; an expected parameter that never becomes ready must produce an explicit error.
+Unused-parameter graph discovery is outside v0.10.
 
-## 7. DDP wrapper rules
+## 6. Frozen DDP execution contract
 
-`DistributedDataParallel` should behave as an educational Module wrapper:
-
-- delegate `forward` to the wrapped Module;
-- keep the wrapped Module registered as a child;
-- expose rank/world-size through its ProcessGroup;
-- prepare Reducer state at the start of a new forward/backward iteration;
-- register hooks once at construction;
-- provide hook removal/cleanup where practical;
-- synchronization is explicit and separate from `forward`, `backward` and optimizer code.
-
-## 8. Reference-correctness requirement
-
-The central integration proof must compare:
+Supported training lifecycle:
 
 ```text
-replica 0 local batch gradient
-replica 1 local batch gradient
-        ↓ average
-DDP synchronized gradient
+optimizer.zero_grad()
+      ↓
+DDP forward
+      ↓
+backward
+      ↓
+synchronize_ddp(all replicas)
+      ↓
+optimizer.step()
 ```
 
-with:
+Backward hooks only stage gradients; they never block on peers.
+
+`synchronize_ddp` is the explicit two-phase barrier:
 
 ```text
-one reference model
-concatenated global batch
-mean-reduced loss
-        ↓
-reference gradient
+launch all rank collectives
+      ↓
+all collectives complete
+      ↓
+finish/unflatten all ranks
 ```
 
-After identical optimizer steps:
+Do not move distributed synchronization into Tensor math, Function backward formulas, backend kernels or optimizer algorithms.
+
+## 7. Frozen bucket invariant
+
+Bucket signature includes:
 
 ```text
-replica 0 parameters
-== replica 1 parameters
-== global-batch reference parameters
+index
+dtype
+device
+parameter names
+shapes
+numel
+offsets
 ```
 
-Use equal local batch sizes for this v0.10 proof so averaging semantics are unambiguous.
+All replicas in one synchronization group must have the same bucket signature.
 
-## 9. Historical invariants
+Different dtype/device Parameters do not share a bucket.
 
-All v0.9 and earlier behavior must remain intact:
+## 8. Frozen reduction semantics
 
-- Tensor/Storage/view/version semantics;
-- Dispatcher and CPU/EDU backend routing;
-- Autograd Engine graph lifetime and hooks;
-- Module/Optimizer/Scheduler state;
-- DataLoader behavior;
-- framework RNG and deterministic checkpoint resume;
-- CNN operators.
+Default DDP reduction is `mean` across ranks.
 
-Distributed code must not be imported by low-level kernels or Autograd Engine internals.
+The reference-equivalence guarantee assumes equal local batch sizes and local losses reduced by mean.
 
-## 10. Testing contract
+Uneven local sample counts are not claimed to equal sample-weighted global-batch training.
 
-Add `tests/test_distributed.py` with at least:
+## 9. Frozen correctness proof
 
-- rank/world-size validation;
-- all-reduce sum/mean;
-- incomplete Work failure;
-- collective order/shape/dtype mismatch;
-- sampler partition/padding/drop_last/set_epoch;
-- reducer bucket construction;
-- hook readiness;
-- missing/unused parameter synchronization failure;
-- replica synchronized-grad equality;
-- DDP vs global-batch reference update equivalence;
-- EDU parameter placement preservation if exercised.
+The release integration proof compares:
 
-Run the full suite:
-
-```bash
-python -m unittest discover -s tests -v
+```text
+two rank-local mean gradients
+      ↓
+mean all-reduce
+      ↓
+SGD step on both replicas
 ```
 
-Exact final branch-head GitHub Actions must be green before freeze.
+against:
 
-## 11. Documentation contract
+```text
+one global concatenated batch
+      ↓
+mean loss/backward
+      ↓
+SGD step
+```
 
-Before freeze update:
+Validated result:
+
+```text
+replica0 parameters
+== replica1 parameters
+== reference parameters
+```
+
+Do not weaken or remove this proof.
+
+## 10. Device invariant
+
+Collectives operate on NumPy gradient payloads in the simulator, but Parameter objects and Storage placement are not recreated during synchronization.
+
+EDU Parameters must remain EDU after gradient synchronization.
+
+## 11. v0.9 runtime regression
+
+The deterministic checkpoint-resume test from v0.9 remains part of the full regression suite and must stay green.
+
+Distributed work must not alter framework RNG/checkpoint guarantees.
+
+## 12. Validation baseline
+
+Validated implementation commit:
+
+```text
+52a3e54085b06664d341e7297bcfe9b7f0d6466f
+```
+
+GitHub Actions:
+
+```text
+Ubuntu 24.04
+Python 3.11.17
+NumPy 2.4.6
+Ran 159 tests in 0.983s
+OK
+```
+
+Any future v0.10 fix must rerun the complete suite and pass CI on the exact modified branch HEAD.
+
+## 13. Documentation map
 
 ```text
 README.md
 version.md
-Agents.md
+mini_pytorch/distributed/process_group.py
+mini_pytorch/distributed/sampler.py
+mini_pytorch/distributed/reducer.py
+mini_pytorch/distributed/ddp.py
+tests/test_distributed.py
 docs/DISTRIBUTED_DDP.md
 examples/13_ddp_simulation.py
-MANIFEST.txt
 ```
 
-README must be the version-specific learning entry point.
+## 14. Explicit non-goals
 
-## 12. Explicit non-goals
+Frozen v0.10 does not implement:
 
-Do not add in v0.10:
-
-- actual multiprocessing/network sockets;
+- multiprocessing/multi-node transport;
 - NCCL/Gloo/MPI;
-- CUDA collective execution;
-- FSDP/ZeRO;
-- sharded optimizer state;
-- distributed checkpointing;
+- CUDA collectives;
+- true communication/backward overlap;
 - `no_sync()`;
-- unused-parameter graph traversal;
-- join context for uneven inputs;
-- production collective retry/failure handling;
-- compiler graph capture.
+- unused-parameter traversal;
+- uneven-input join;
+- FSDP/ZeRO;
+- sharded/distributed checkpoint;
+- production collective fault tolerance.
 
-## 13. Definition of Done
+## 15. Next-version boundary
 
-v0.10 can be frozen only after:
-
-- ProcessGroup simulation is complete and tested;
-- DistributedSampler is complete and tested;
-- DDP/Reducer/hooks/buckets are complete and tested;
-- explicit synchronization barrier is demonstrated;
-- global-batch reference equivalence passes;
-- full historical suite passes;
-- educational docs/example are complete;
-- package version is `0.10.0`;
-- exact final branch-head CI is green.
+Graph capture/compiler concepts belong to `v0.11`, created from the latest validated `main`, not from this frozen branch.
