@@ -7,9 +7,13 @@
 ## 1. Current project state
 
 - Latest integrated release: **v1.0.0**
-- Integrated test baseline: **251 tests / OK**
+- Frozen `v1.0` release baseline: **251 tests / OK**
+- Post-v1.0 reviewed `main` implementation baseline: **292 tests / OK**
+- Reviewed implementation commit: `28a9071dbd89d2af553a328c5288455facb36209`
 - Integrated example: `examples/19_integrated_architecture.py` / PASS
 - Original v0.x → v1.0 learning sequence: **complete**
+
+The 292-test baseline includes maintenance/hardening added after the frozen v1.0 learning snapshot. It does **not** redefine the historical v1.0 branch as a 292-test release.
 
 There is intentionally no automatic `v1.1` roadmap.
 
@@ -152,11 +156,16 @@ Canonical project docs on `main` are:
 README.md
 Agents.md
 Plan.md
+REVIEW.md
 docs/ARCHITECTURE_V1.md
 docs/LEARNING_PATH.md
 docs/ROADMAP.md
 docs/PYTORCH_MAPPING.md
+docs/REVIEW_FINDINGS.md
+docs/REVIEW_MATRIX.md
 ```
+
+`REVIEW.md` and the two `docs/REVIEW_*` files record post-v1.0 maintenance findings and exact-head validation evidence. They do not change the frozen historical scope of `v1.0`.
 
 ## 7. Post-v1.0 change gate
 
@@ -217,6 +226,13 @@ The current CI additionally runs:
 python examples/19_integrated_architecture.py
 ```
 
+For test-count claims, distinguish the snapshot being described:
+
+```text
+frozen v1.0 branch: 251 tests / OK
+reviewed post-v1.0 main implementation: 292 tests / OK
+```
+
 Every meaningful change should include, where applicable:
 
 - happy path;
@@ -272,6 +288,6 @@ Future work may revisit one of these only after it passes the post-v1.0 change g
 
 ## 13. Current directive
 
-The project is currently in **stable integrated v1.0 state**.
+The project is currently in **stable integrated v1.0 architecture + post-v1.0 maintenance state**.
 
 Default action is maintenance, study, benchmarking or documentation refinement—not automatic feature expansion.
