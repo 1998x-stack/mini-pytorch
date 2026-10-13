@@ -1,32 +1,18 @@
-# Agents.md — mini-pytorch v1.0 Release Candidate Contract
+# Agents.md — mini-pytorch v1.0 Frozen Release Contract
 
-> Read before modifying branch `v1.0`.
+> Branch `v1.0` is a frozen historical/integrated learning snapshot.
 
 ## 1. Branch identity
 
 - Branch: `v1.0`
 - Previous: `v0.15`
 - Theme: Integrated Architecture
-- Status: **release candidate**
+- Status: **frozen**
 - Package version: `1.0.0`
-- Starting baseline: 247 tests / OK
-- Current validated baseline: **251 tests / OK**
-- Validated framework/CI commit: `d49b1872274f790303d719034074b75c270a18c2`
+- Frozen test baseline: **251 tests / OK**
+- Validated release-candidate HEAD: `7a8391f0959e0671e2bf40720e67296793048947`
 
-## 2. Current directive
-
-The v1.0 mechanism/documentation scope is complete.
-
-Do not add another subsystem or optional feature before freeze.
-
-Allowed changes before freeze are limited to:
-
-- release-document corrections;
-- fixes for failures found by exact-head CI;
-- corrections required for the integrated example to remain executable;
-- consistency fixes inside already-audited v1.0 boundaries.
-
-## 3. Frozen architecture target
+## 2. Frozen architecture
 
 ```text
 Tensor / Storage / Device
@@ -54,37 +40,29 @@ Lifetime / MemoryPlan / ExecutionPlan
 PlannedExecutor
 ```
 
-Preserve the ownership boundaries documented in `docs/ARCHITECTURE_V1.md`.
+The ownership/failure boundaries in `docs/ARCHITECTURE_V1.md` are part of the frozen v1.0 contract.
 
-## 4. Release-candidate evidence
+## 3. Validation contract
 
-Exact framework commit `d49b1872274f790303d719034074b75c270a18c2` passed:
+The release candidate passed:
 
-```text
+```bash
 python -m unittest discover -s tests -v
-→ Ran 251 tests
-→ OK
-```
-
-and:
-
-```text
 python examples/19_integrated_architecture.py
-→ checkpoint restore PASS
-→ graph cache hit/reuse PASS
-→ planned output matches eager PASS
-→ planned gradients match eager PASS
 ```
 
-GitHub Actions environment:
+with:
 
 ```text
-Ubuntu 24.04
-Python 3.11.17
-NumPy 2.4.6
+251 tests / OK
+integrated architecture example / PASS
 ```
 
-## 5. Release artifacts that must remain present
+The exact frozen HEAD must pass the same workflow before `main` integration.
+
+## 4. Frozen artifacts
+
+Key release artifacts:
 
 ```text
 README.md
@@ -105,90 +83,56 @@ examples/19_integrated_architecture.py
 tests/test_v1_integration.py
 ```
 
-## 6. API policy
+## 5. Rules for future changes on this branch
 
-The v1.0 API audit intentionally chose **no breaking surface rewrite**.
+Allowed only:
 
-Do not remove/rename historical public learning concepts merely for cosmetic similarity with PyTorch.
+- documentation corrections;
+- tests that clarify already-promised v1.0 behavior;
+- narrowly scoped fixes inside the frozen architecture contract.
 
-Keep these distinctions explicit:
+Forbidden:
 
-```text
-project educational analogue
-!=
-upstream source/API parity
-```
-
-## 7. Integrated example policy
-
-The integrated example separates:
-
-```text
-eager training
-runtime/checkpoint state
-compiler specialization
-AOT/lowering/planned runtime
-```
-
-Do not force DDP/checkpoint/compiler execution into one unrealistic production loop. The architectural integration is expressed by ownership boundaries and executable cross-layer proofs.
-
-## 8. CI policy
-
-Workflow must continue to run for:
-
-```text
-main
-v*
-```
-
-Required release gate:
-
-```bash
-python -m unittest discover -s tests -v
-python examples/19_integrated_architecture.py
-```
-
-Never claim a later HEAD is validated by the earlier `d49b1872...` run. Every release-candidate/frozen/main HEAD gets its own CI result.
-
-## 9. Explicit non-goals
-
-Do not add before freeze:
-
-- CUDA/Triton/codegen;
+- new subsystems;
 - new backend families;
-- symbolic shapes;
-- worker/prefetch DataLoader runtime;
-- NCCL/network distributed runtime;
-- production allocator/profiler;
-- whole-Python compiler;
-- PyTorch feature parity.
+- compiler roadmap expansion;
+- feature-parity additions;
+- future-version mechanisms.
 
-## 10. Freeze workflow
+## 6. Compatibility / mapping rule
+
+Do not rewrite v1.0 history because upstream PyTorch later changes terminology or implementation.
+
+`docs/PYTORCH_MAPPING.md` records conceptual correspondence, not a source/API parity promise.
+
+## 7. Future development rule
+
+Future development must:
 
 ```text
-current release-candidate docs commit
+start from latest validated main
       ↓
-exact HEAD CI green
+identify a genuinely missing mental model
       ↓
-change only version.md + Agents.md to frozen status
+write a new roadmap/branch contract
       ↓
-exact frozen HEAD CI green
+create a new version branch
+```
+
+There is no automatic `v1.1` queue.
+
+## 8. Integration sequence
+
+After exact frozen-head CI succeeds:
+
+```text
+verify main → v1.0 is pure fast-forward
       ↓
-verify main...v1.0 is pure fast-forward
-      ↓
-fast-forward v1.0 into main
+fast-forward main to frozen v1.0
       ↓
 restore canonical main README / Agents / Plan
       ↓
-exact main HEAD CI green
+run exact main-head CI
 ```
 
-## 11. Frozen branch rule after release
-
-After v1.0 freezes, permitted branch changes are only:
-
-- documentation corrections;
-- tests clarifying already-promised behavior;
-- narrow fixes inside the frozen v1.0 contract.
-
-Future architecture work must start from latest `main` and first justify a new missing mental model.
+The frozen `v1.0` branch itself must then remain a stable learning snapshot.
