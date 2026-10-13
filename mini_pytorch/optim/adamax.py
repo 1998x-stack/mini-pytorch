@@ -19,6 +19,17 @@ class Adamax(Optimizer):
             raise ValueError("weight_decay must be non-negative")
         super().__init__(params, defaults={"lr": lr, "betas": (beta1, beta2), "eps": eps, "weight_decay": weight_decay})
 
+    def _validate_param_group(self, group) -> None:
+        beta1, beta2 = group["betas"]
+        if group["lr"] < 0:
+            raise ValueError("lr must be non-negative")
+        if not 0 <= beta1 < 1 or not 0 <= beta2 < 1:
+            raise ValueError("betas must be in [0, 1)")
+        if group["eps"] <= 0:
+            raise ValueError("eps must be positive")
+        if group["weight_decay"] < 0:
+            raise ValueError("weight_decay must be non-negative")
+
     def step(self) -> None:
         for group in self.param_groups:
             lr, eps, weight_decay = group["lr"], group["eps"], group["weight_decay"]
