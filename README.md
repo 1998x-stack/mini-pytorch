@@ -1,321 +1,359 @@
-# mini-pytorch v0.14 — Lowering / Fusion / Inductor-like Concepts
+# mini-pytorch v0.15 — Runtime / Performance Mechanics
 
-> 本版本专门研究：当 forward / backward 都已经是显式 Graph 后，如何把高层 logical Graph 转换成可分析、可优化、可融合、可执行的 lower-level program。
+> 在 v0.14 已经得到正确、可检查的 `LoweredProgram` 之后，v0.15 继续回答：runtime 如何**测量**执行、分析 Value 生命周期、规划 buffer、执行安全复用，并用可重复 benchmark 判断优化是否真的有收益？
 
-**Branch:** `v0.14`  
-**Previous:** `v0.13` AOTAutograd-like Graph Differentiation  
-**Package:** `0.14.0`
+**Branch:** `v0.15`  
+**Package:** `0.15.0`  
+**Previous:** `v0.14` Lowering / Fusion  
+**Validation baseline:** `247 / 247 tests passed` (release-candidate implementation)
 
-## 1. 核心变化
+## 1. 本版本核心差异
 
-v0.13 已经得到：
-
-```text
-forward Graph
-+
-backward Graph
-```
-
-v0.14 增加：
+v0.14：
 
 ```text
 Graph
   ↓
-normalize_graph
-  ↓
-analyze_graph
-  ↓
-DCE
-  ↓
-safe constant folding
-  ↓
-fusion planning
+analysis / transforms / fusion
   ↓
 LoweredProgram
   ↓
 LoweredExecutor
 ```
 
-`GraphInterpreter` 继续作为 reference executor。
-
-## 2. 新增分析层
-
-```python
-from mini_pytorch.compiler import analyze_graph
-
-analysis = analyze_graph(graph)
-print(analysis.format())
-```
-
-每个 Value 都有显式信息：
-
-```text
-producer_node_id
-user_node_ids
-use_count
-is_graph_output
-is_live
-```
-
-这些信息是 DCE 和 fusion 的依赖，而不是在 pass 内临时猜测。
-
-## 3. Graph normalization
-
-```python
-normalized = normalize_graph(graph)
-```
-
-特点：
-
-- 不修改 source Graph；
-- deterministic Value / Node rebuilding；
-- input/output ordering 保持；
-- constant payload / metadata 保持；
-- before / after 都执行 validation。
-
-## 4. Dead Code Elimination
-
-```text
-Graph outputs
-     ↓ reverse reachability
-live Values / Nodes
-     ↓
-rebuilt Graph
-```
-
-例如：
-
-```python
-def fn(x):
-    dead = x * x
-    live = x + x
-    return live
-```
-
-DCE 后 `dead` multiply 被移除。
-
-v0.14 只对当前 educational Graph 中被视作 pure 的节点做这一推理，不声称拥有通用 side-effect analysis。
-
-## 5. Safe constant folding
-
-首批 foldable logical ops：
-
-```text
-add
-mul
-relu
-```
-
-只在所有 Tensor inputs 都是 captured constants、同 device、且不 requires_grad 时折叠。
-
-例如：
-
-```text
-constant A
-constant B
-   ↓
-A * B
-   ↓
-relu
-```
-
-可在 lowering 时变成一个新的 `TensorConstant`。
-
-Grad-requiring constants 不折叠，避免改变梯度语义。
-
-## 6. Pointwise fusion
-
-首批 fusible ops：
-
-```text
-aten::add.Tensor
-aten::mul.Tensor
-aten::relu.default
-```
-
-例如：
-
-```text
-x ──┐
-    mul ── add ── relu
- y ─┘      ▲
-           x
-```
-
-可以形成：
-
-```text
-PointwiseFusion
-  nodes = [mul, add, relu]
-```
-
-但 fusion 不是简单把相邻节点贴标签。中间 Value 必须满足真实 dependency/use-count 条件。
-
-如果：
-
-```text
-shared
- ├── branch A
- └── branch B
-```
-
-则 producer 不会被错误吞入一个单链 fusion group。
-
-## 7. Fusion barriers
-
-当前明确作为 barrier：
-
-```text
-matmul
-sum
-conv / pool
-aot::unbroadcast
-aot::sum_backward
-aot::transpose2d
-aot::relu_backward
-```
-
-它们进入：
-
-```text
-ExternalOp
-```
-
-并继续通过正常 Dispatcher 执行。
-
-## 8. Lowered representation
+v0.15：
 
 ```text
 LoweredProgram
-├── ExternalOp
-└── PointwiseFusion
+      ↓
+benchmark + profiling
+      ↓
+Value lifetime analysis
+      ↓
+Buffer interval analysis
+      ↓
+MemoryPlan
+      ↓
+ExecutionPlan
+      ↓
+PlannedExecutor
 ```
 
-查看：
+关键思想：
+
+```text
+LoweredProgram
+= what executes
+
+ExecutionPlan
+= how runtime resources are assigned
+```
+
+## 2. Measurement before optimization
+
+新增：
 
 ```python
-result = lower_graph(graph)
-print(result.program.format())
-print(result.stats().format())
-print(result.explain())
+from mini_pytorch.compiler import BenchmarkConfig, benchmark
+
+report = benchmark(
+    fn,
+    config=BenchmarkConfig(
+        warmup=3,
+        repeats=10,
+        iterations_per_repeat=5,
+    ),
+)
+
+print(report.median_ms)
+print(report.mean_ms)
 ```
 
-可观察 metrics 包括：
+规则：
 
-```text
-original_nodes
-normalized_nodes
-live_nodes_after_dce
-constants_folded
-optimized_nodes
-fusion_groups
-fused_nodes
-external_nodes
-lowered_instructions
-```
+- warmup 不进入 samples；
+- 每个 repeat 归一化成 per-iteration latency；
+- median 为主要摘要；
+- 同时暴露 mean/min/max；
+- unit tests **不使用绝对速度阈值**；
+- benchmark 结果是 evidence，不是 correctness oracle。
 
-注意：
-
-```text
-fewer nodes != automatically faster
-```
-
-性能测量属于 v0.15。
-
-## 9. LoweredExecutor
+## 3. Per-instruction profiling
 
 ```python
-lowered = lower_graph(graph)
-out = LoweredExecutor(lowered.program)(x, y)
+profiled = profile_lowered(lowered.program, x, y)
+print(profiled.profile.format())
 ```
 
-执行策略：
+每个 `ExecutionEvent` 包含：
 
 ```text
-ExternalOp
-   ↓
-Dispatcher
+instruction_index
+instruction_kind
+label
+input Value ids
+output Value ids
+elapsed_ns
+```
 
+`ExternalOp` 与 `PointwiseFusion` 会分别显示。
+
+## 4. Value lifetime
+
+粗粒度 lowered-instruction lifetime：
+
+```text
+ValueLifetime
+├── birth_instruction
+├── last_use_instruction
+├── input / constant / output / retained flags
+├── shape
+├── dtype
+└── device
+```
+
+约定：
+
+```text
+input / constant birth = -1
+Graph output last_use = instruction_count
+AOT saved/retained Value last_use = instruction_count
+```
+
+因此 runtime 不会在 backward 仍需要 forward saved Value 时提前回收它。
+
+## 5. Buffer planning
+
+新增：
+
+```text
+BufferSpec
+BufferInterval
+BufferSlot
+MemoryPlan
+```
+
+v0.15 的 reuse 很保守。只有同时满足以下条件的 `PointwiseFusion` 临时值才可能进入 reusable slot：
+
+```text
+producer 属于 pointwise fusion
+不是 graph output
+不是 retained/AOT saved value
+shape 完全相同
+dtype 完全相同
+device 完全相同
+lifetime 不重叠
+```
+
+暂时不会复用：
+
+```text
+user input
+constant
+Graph output
+retained saved Value
+ExternalOp output
+```
+
+这不是 production allocator，而是一个可以逐行检查的 greedy educational buffer planner。
+
+## 6. ExecutionPlan
+
+```python
+plan = build_execution_plan(
+    lowered.program,
+    retained_value_ids=saved_ids,
+)
+
+print(plan.format())
+```
+
+结构：
+
+```text
+ExecutionPlan
+├── LoweredProgram
+├── ValueLifetimeAnalysis
+├── MemoryPlan
+│   ├── BufferInterval[]
+│   ├── BufferSlot[]
+│   └── value → slot
+├── ExecutionStep[]
+└── release-after-node schedule
+```
+
+Memory metrics：
+
+```text
+logical reusable Value count
+physical slot count
+reuse_count
+naive_allocation_bytes
+planned_buffer_bytes
+bytes_avoided_by_reuse
+peak_eligible_live_bytes
+```
+
+这些是**结构/内存模型指标**，与 wall-clock latency 分开报告。
+
+## 7. PlannedExecutor
+
+```python
+planned = PlannedExecutor(plan)
+out = planned(x, y)
+```
+
+执行原则：
+
+```text
 PointwiseFusion
-   ↓
-NumPy reference expression
+→ 可写入预分配 Storage slot
+
+ExternalOp
+→ 继续通过 Dispatcher
 ```
 
-fusion executor 会保留 CPU / EDU logical device identity，但不会生成 C++/CUDA/Triton kernel。
+也就是说 v0.15 没有为了 buffer reuse 绕开 Dispatcher 或重写 matmul/sum 等 kernel。
 
-整个 lowered run 是 first-order numerical execution，不会构造一个“部分 fused、部分 eager”的 Autograd graph。
+每次 executor call 都创建独立 slot pool，所以一次运行返回的 Tensor 不会因为下一次运行复用 slot 而被覆盖。
 
-## 10. 为什么 v0.13 很重要
+## 8. AOT forward/backward 集成
 
-因为 backward 在 v0.13 已成为显式 Graph，所以 v0.14 的同一 lowering pipeline 可以直接处理：
+v0.13/v0.14 的 saved-value ABI 继续成立：
 
 ```text
-AOTProgram.forward_graph
-AOTProgram.backward_graph
+AOT forward Graph
+      ↓
+lower_graph
+      ↓
+map source saved Value ids
+      ↓
+build_execution_plan(retained=saved ids)
+      ↓
+PlannedExecutor.run_with_values
+      ↓
+saved Values
+      ↓
+planned backward Graph
+      ↓
+input gradients
 ```
 
-核心 reference proof：
+验证链：
 
 ```text
-GraphInterpreter(forward)
-==
-LoweredExecutor(lowered forward)
+eager Autograd gradients
+      ==
+AOT reference gradients
+      ==
+lowered backward gradients
+      ==
+planned backward gradients
 ```
 
-以及：
+## 9. Capture identity robustness fix
+
+v0.15 的长表达式/大量临时 Tensor 测试暴露了一个 inherited compiler bug：旧 capture 只保存 `id(tensor) → Value`，短生命周期 Tensor 被 GC 后 Python 可能复用同一个 object id，导致两个不同 eager temporary 被错误映射为同一 Graph Value。
+
+现在 capture session 在 capture 生命周期内保存强引用，并要求：
 
 ```text
-AOT backward Graph reference gradients
-==
-LoweredExecutor(lowered backward) gradients
+same Python id
++
+object identity is the same object
 ```
 
-## 11. 重要文件
+才能复用 Graph Value。
+
+这保证一个 Graph Value 不会出现多个 producer。
+
+## 10. 推荐阅读顺序
 
 ```text
-mini_pytorch/compiler/analysis.py
-mini_pytorch/compiler/lowering.py
-
-tests/test_lowering.py
-docs/LOWERING_FUSION.md
-examples/17_lowering_fusion.py
+mini_pytorch/compiler/benchmark.py
+      ↓
+mini_pytorch/compiler/profiler.py
+      ↓
+mini_pytorch/compiler/runtime_analysis.py
+      ↓
+mini_pytorch/compiler/execution_plan.py
+      ↓
+tests/test_runtime_performance.py
+      ↓
+tests/test_execution_plan.py
+      ↓
+docs/RUNTIME_PERFORMANCE.md
+      ↓
+examples/18_runtime_performance.py
 ```
 
-推荐阅读：
+同时可对照：
 
 ```text
-compiler/ir.py
-    ↓
-compiler/analysis.py
-    ↓
-compiler/lowering.py
-    ↓
-test_lowering.py
-    ↓
-LOWERING_FUSION.md
-    ↓
-17_lowering_fusion.py
+v0.14 lowering.py
+      ↓
+v0.15 execution_plan.py
 ```
 
-## 12. Quick run
+理解 compiler/runtime handoff。
+
+## 11. Quick run
 
 ```bash
-python examples/17_lowering_fusion.py
+python examples/18_runtime_performance.py
 python -m unittest discover -s tests -v
 ```
 
-## 13. Non-goals
+## 12. 明确非目标
 
-v0.14 不实现：
+v0.15 不实现：
 
-- production TorchInductor；
-- Triton / CUDA / C++ code generation；
-- GPU scheduling / autotuning；
-- symbolic shapes；
-- arbitrary alias/mutation analysis；
-- memory planning / buffer reuse；
-- 未经 benchmark 的性能结论。
+- production caching allocator；
+- CUDA/Triton/C++ codegen；
+- GPU benchmark；
+- async streams/events；
+- multithreaded scheduler；
+- symbolic-shape memory planner；
+- arbitrary alias/mutation optimization；
+- benchmark cherry-picking；
+- “一定比 eager 更快”的结论。
+
+## 13. 从 v0.1 到 v0.15
+
+```text
+v0.1   Dynamic Autograd
+  ↓
+v0.2   Optimizer / Scheduler
+  ↓
+v0.3   DataLoader
+  ↓
+v0.4   Storage / Views
+  ↓
+v0.5   Dispatcher
+  ↓
+v0.6   CNN operators
+  ↓
+v0.7   Device / Backend
+  ↓
+v0.8   Autograd Engine
+  ↓
+v0.9   Training Runtime
+  ↓
+v0.10  DDP
+  ↓
+v0.11  Graph IR
+  ↓
+v0.12  Guards / Cache
+  ↓
+v0.13  AOT backward Graph
+  ↓
+v0.14  Lowering / Fusion
+  ↓
+v0.15  Runtime / Performance Mechanics
+  ↓
+v1.0   Integrated Architecture
+```
 
 ## 14. Next
 
-`v0.15` 将研究 **Runtime / Performance Mechanics**：profiling、Value lifetime、buffer reuse、preallocation、execution plan 和真实 benchmark。
+v0.15 完成后不再继续堆新大机制，下一阶段进入 **v1.0 Integrated Architecture**：统一架构文档、端到端学习路径、API consistency、完整示例与最终 release snapshot。

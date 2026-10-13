@@ -5,15 +5,16 @@
 - **Branch:** `v0.15`
 - **Previous version:** `v0.14`
 - **Theme:** Runtime / Performance Mechanics
-- **Status:** active development
-- **Package version target:** `0.15.0`
-- **Starting regression baseline:** **221 tests / OK**
+- **Status:** release candidate
+- **Package version:** `0.15.0`
+- **Starting baseline:** 221 tests
+- **Current validated implementation baseline:** **247 / 247 tests passed**
 
 v0.15 asks:
 
-> Once a correct `LoweredProgram` exists, how should runtime execution be measured, how long are Values actually live, and how can future memory reuse be based on explicit evidence rather than guesswork?
+> Once a correct `LoweredProgram` exists, how should runtime execution be measured, how long are Values live, how can temporary storage be safely reused, and how do we benchmark the result without making unsupported performance claims?
 
-## Core dependency
+## Core delta from v0.14
 
 ```text
 v0.14
@@ -26,137 +27,288 @@ LoweredExecutor
 v0.15
 LoweredProgram
   ↓
-benchmark / profiling
+Benchmark / Profiler
   ↓
 Value lifetime analysis
   ↓
-Buffer planning
+Buffer intervals / MemoryPlan
   ↓
 ExecutionPlan
   ↓
 PlannedExecutor
 ```
 
-## Stage 1 — measurement foundation
+## Added in this version
 
-The first implementation stage contains only:
+### Measurement
+
+- `BenchmarkConfig`
+- `BenchmarkReport`
+- `benchmark()`
+- explicit warmup/repeats/iterations-per-repeat
+- median/mean/min/max latency summaries
+- no absolute speed assertions in tests
+
+### Profiling
+
+- `ExecutionEvent`
+- `ExecutionProfile`
+- `ProfiledResult`
+- `profile_lowered()`
+- one event per lowered instruction
+- deterministic instruction structure with naturally variable timing
+
+### Runtime lifetime analysis
+
+- `ValueLifetime`
+- `ValueLifetimeAnalysis`
+- `analyze_value_lifetimes()`
+- input/constant birth before instruction 0
+- graph output boundary extension
+- AOT retained/saved-value boundary extension
+- fused internal Value visibility
+
+### Buffer planning
+
+- `BufferSpec`
+- `BufferInterval`
+- `BufferSlot`
+- `MemoryPlan`
+- exact shape/dtype/device compatibility
+- non-overlap requirement
+- conservative eligibility limited to pointwise-fusion temporaries
+- graph output and retained values excluded from reuse
+- input/constant and ExternalOp output ownership preserved
+
+### Execution planning
+
+- `ExecutionStep`
+- `ExecutionPlan`
+- `build_execution_plan()`
+- explicit release-after-node schedule
+- separation of compiler work (`LoweredProgram`) from runtime resource assignment (`ExecutionPlan`)
+
+### Planned execution
+
+- `PlannedExecutor`
+- preallocated `Storage.empty()` slots for eligible pointwise temporaries
+- NumPy `out=` execution for add/mul/relu when a slot is assigned
+- ExternalOps continue through Dispatcher
+- fresh slot pool per call
+- `run_with_stats()`
+- `run_with_values()` for explicitly retained values
+
+### Runtime metrics
+
+- physical slot count
+- logical assigned Value count
+- reuse count
+- naive allocation bytes
+- planned buffer bytes
+- bytes avoided by reuse
+- peak eligible live bytes
+- released environment reference count
+
+### Compiler robustness fix
+
+v0.15 runtime stress tests exposed an inherited capture identity bug. A capture session previously stored only `id(tensor) -> Value`. Short-lived temporary Tensors could be garbage-collected and their Python object ids recycled, causing distinct intermediates to share one Graph Value and creating multiple producers.
+
+Capture now keeps strong references to all observed Tensor objects for the full session and validates object identity with `is` before reusing a Value mapping.
+
+A dedicated regression test creates/deletes many short-lived temporaries and verifies unique producer Values.
+
+## What remains unchanged
+
+v0.15 does not change:
+
+- Tensor mathematical semantics;
+- Storage/view/version rules;
+- Dispatcher backend selection;
+- eager AutogradEngine;
+- Module/Optimizer/DataLoader behavior;
+- DDP semantics;
+- Graph capture logical-op boundary;
+- Guards/GraphCache specialization;
+- AOT VJP definitions;
+- v0.14 lowering/fusion legality rules.
+
+## Architecture
 
 ```text
-BenchmarkConfig / BenchmarkReport
-ExecutionEvent / ExecutionProfile
-profile_lowered(...)
-ValueLifetime / analyze_value_lifetimes(...)
-```
-
-No buffer reuse is allowed before these measurements and lifetime rules are explicit.
-
-### Benchmark contract
-
-- warmup is explicit and excluded from samples;
-- repeated measured runs are required;
-- timing uses a monotonic high-resolution clock;
-- report per-iteration samples, median, min/max and mean;
-- no unit test may rely on absolute speed thresholds;
-- a benchmark result is evidence, not a correctness oracle.
-
-### Profiling contract
-
-- profiling is opt-in;
-- numerical semantics must equal ordinary `LoweredExecutor` execution;
-- one event is recorded per lowered instruction;
-- event structure is deterministic even though elapsed times vary;
-- ExternalOp and PointwiseFusion remain distinguishable.
-
-### Lifetime contract
-
-For every lowered Graph Value:
-
-```text
-ValueLifetime
-├── value_id
-├── birth_instruction
-├── last_use_instruction
-├── is_input
-├── is_constant
-├── is_output
-├── is_retained
-├── shape
-├── dtype
-└── device
-```
-
-Conventions:
-
-- graph inputs/constants are born before instruction 0 (`birth=-1`);
-- node-produced Values are born at the instruction that produces them;
-- graph outputs stay live through the execution boundary (`last_use = instruction_count`);
-- explicitly retained/saved Values also stay live through that boundary;
-- internal fused Values are still represented in the educational analysis because the current reference fusion executor materializes them for inspectability/AOT saved-value access.
-
-## Later stages
-
-After Stage 1 is validated:
-
-```text
-BufferSpec / BufferSlot
-      ↓
-BufferPlanner
-      ↓
+Python eager
+   ↓
+Graph capture
+   ↓
+AOT forward/backward Graphs
+   ↓
+Lowering / Fusion
+   ↓
+LoweredProgram
+   ├── ExternalOp
+   └── PointwiseFusion
+   ↓
+Runtime measurement
+   ├── benchmark
+   └── profiling
+   ↓
+Value lifetime analysis
+   ↓
+MemoryPlan
+   ├── BufferInterval
+   └── BufferSlot
+   ↓
 ExecutionPlan
-      ↓
+   ↓
 PlannedExecutor
-      ↓
-allocation + peak-live metrics
-      ↓
-reproducible executor benchmark matrix
 ```
 
-## Correctness oracle
+## Correctness proofs
 
-Performance/runtime work never replaces existing semantic references:
+Required equality chain:
 
 ```text
-GraphInterpreter
+GraphInterpreter output
       ==
-LoweredExecutor
+LoweredExecutor output
       ==
-future PlannedExecutor
+PlannedExecutor output
 ```
 
-For AOT gradients:
+AOT chain:
 
 ```text
-eager AutogradEngine
+eager Autograd gradients
       ==
-v0.13 backward Graph
+AOT reference gradients
       ==
-v0.14 lowered backward Graph
+lowered backward gradients
       ==
-future planned backward execution
+planned backward gradients
 ```
 
-## Non-goals
+CPU and EDU logical placement are both covered where applicable.
 
-- CUDA/Triton code generation;
-- GPU benchmarking;
+## Buffer reuse rules
+
+A Value is eligible only when:
+
+```text
+produced inside PointwiseFusion
+AND not Graph output
+AND not retained/AOT saved
+AND exact shape match
+AND exact dtype match
+AND exact device match
+AND assigned lifetimes do not overlap
+```
+
+First planner algorithm:
+
+```text
+Values in birth order
+   ↓
+scan existing compatible slots
+   ↓
+previous lifetime ended before current birth?
+   ├── yes → reuse
+   └── no  → create new slot
+```
+
+## Important source files
+
+```text
+mini_pytorch/compiler/benchmark.py
+mini_pytorch/compiler/profiler.py
+mini_pytorch/compiler/runtime_analysis.py
+mini_pytorch/compiler/execution_plan.py
+mini_pytorch/compiler/capture.py
+```
+
+## Important tests
+
+```text
+tests/test_runtime_performance.py
+tests/test_execution_plan.py
+tests/test_capture_identity.py
+```
+
+## Documentation / example
+
+```text
+docs/RUNTIME_PERFORMANCE.md
+examples/18_runtime_performance.py
+```
+
+## Validation
+
+Validated implementation commit:
+
+```text
+517d89aee21156c8abc984e1d81abfbd79f4ba5c
+```
+
+GitHub Actions environment:
+
+```text
+Ubuntu 24.04
+Python 3.11.17
+NumPy 2.4.6
+```
+
+Result:
+
+```text
+Ran 247 tests
+OK
+```
+
+The release-candidate documentation commit still requires its own exact-head CI before freeze.
+
+## Learning goals
+
+After v0.15, the reader should be able to explain:
+
+1. why profiling and benchmarking are different;
+2. why instruction reduction is not automatically a speedup;
+3. how a Value lifetime constrains memory reuse;
+4. why graph outputs and saved forward Values escape normal temporary lifetime;
+5. how logical Values can map to fewer physical buffer slots;
+6. why `LoweredProgram` and `ExecutionPlan` are different abstractions;
+7. why output-buffer execution is introduced narrowly rather than by bypassing Dispatcher;
+8. how AOT saved Values constrain forward memory planning;
+9. why performance claims require repeated measurement;
+10. how runtime stress tests can expose compiler identity/lifetime bugs.
+
+## Explicit non-goals
+
 - production allocator;
-- asynchronous scheduling;
-- multithreaded executor;
+- arbitrary equal-byte cross-shape reuse;
+- alias/mutation optimization for arbitrary programs;
+- CUDA/Triton codegen;
+- GPU benchmarking;
+- asynchronous streams/events;
+- multithreaded scheduling;
 - symbolic-shape memory planning;
-- claiming a speedup from instruction-count reduction;
-- absolute timing assertions in CI.
+- production profiler;
+- PyTorch performance parity;
+- claim that PlannedExecutor is always faster.
 
 ## Definition of Done
 
 v0.15 freezes only after:
 
-1. reproducible benchmark primitives exist;
-2. optional per-instruction profiling exists;
-3. Value lifetimes are explicit and tested;
-4. conservative buffer planning exists;
-5. an inspectable `ExecutionPlan` exists;
-6. a `PlannedExecutor` matches existing reference execution;
-7. AOT saved Values survive forward planning correctly;
-8. allocation/reuse/peak-live metrics are exposed;
-9. an executor comparison example exists;
-10. all historical and new tests pass on exact branch HEAD.
+- benchmark/profiling/lifetime layers are complete;
+- conservative MemoryPlan and ExecutionPlan exist;
+- PlannedExecutor matches references;
+- AOT saved Values and backward remain correct;
+- allocation/reuse/peak-live metrics are inspectable;
+- runtime benchmark example is included;
+- README/docs/MANIFEST are complete;
+- exact release-candidate HEAD CI is green;
+- branch is marked frozen;
+- exact frozen-head CI is green;
+- validated tree is fast-forwarded into main.
+
+## Next version
+
+After v0.15, the roadmap moves to **v1.0 — Integrated Architecture**. The focus shifts from adding major mechanisms to consolidation: architecture consistency, end-to-end examples, API cleanup, PyTorch subsystem mapping, and a final learning-oriented release snapshot.

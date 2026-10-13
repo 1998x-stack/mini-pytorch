@@ -21,6 +21,7 @@ docs/LOWERING_FUSION.md
 docs/MNIST_TRAINING.md
 docs/OPTIMIZERS_AND_SCHEDULERS.md
 docs/ROADMAP.md
+docs/RUNTIME_PERFORMANCE.md
 docs/TENSOR_MEMORY.md
 docs/TRAINING_RUNTIME.md
 examples/01_autograd.py
@@ -40,6 +41,7 @@ examples/14_graph_capture.py
 examples/15_graph_cache.py
 examples/16_aot_autograd.py
 examples/17_lowering_fusion.py
+examples/18_runtime_performance.py
 mini_pytorch/__init__.py
 mini_pytorch/aot_kernels.py
 mini_pytorch/autograd.py
@@ -59,13 +61,17 @@ mini_pytorch/utils.py
 mini_pytorch/compiler/__init__.py
 mini_pytorch/compiler/analysis.py
 mini_pytorch/compiler/aot.py
+mini_pytorch/compiler/benchmark.py
 mini_pytorch/compiler/cache.py
 mini_pytorch/compiler/capture.py
 mini_pytorch/compiler/compiled.py
+mini_pytorch/compiler/execution_plan.py
 mini_pytorch/compiler/guards.py
 mini_pytorch/compiler/interpreter.py
 mini_pytorch/compiler/ir.py
 mini_pytorch/compiler/lowering.py
+mini_pytorch/compiler/profiler.py
+mini_pytorch/compiler/runtime_analysis.py
 mini_pytorch/compiler/signature.py
 mini_pytorch/data/__init__.py
 mini_pytorch/data/dataloader.py
@@ -103,12 +109,14 @@ mini_pytorch/runtime/state.py
 tests/test_aot_autograd.py
 tests/test_autograd.py
 tests/test_autograd_engine.py
+tests/test_capture_identity.py
 tests/test_classification.py
 tests/test_cnn_ops.py
 tests/test_data.py
 tests/test_device_backend.py
 tests/test_dispatcher.py
 tests/test_distributed.py
+tests/test_execution_plan.py
 tests/test_graph_cache.py
 tests/test_graph_ir.py
 tests/test_lowering.py
@@ -119,4 +127,5 @@ tests/test_ops.py
 tests/test_optim.py
 tests/test_optim_extended.py
 tests/test_runtime_checkpoint.py
+tests/test_runtime_performance.py
 tests/test_storage.py

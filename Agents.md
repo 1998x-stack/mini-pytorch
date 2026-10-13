@@ -7,8 +7,9 @@
 - Branch: `v0.15`
 - Previous: `v0.14`
 - Theme: Runtime / Performance Mechanics
-- Status: active until exact final-head CI passes
+- Status: release candidate until exact final-head CI passes
 - Starting baseline: 221 tests
+- Current validated implementation baseline: 247 tests
 
 ## Required dependency order
 
@@ -19,7 +20,7 @@ measurement
       ↓
 Value lifetime analysis
       ↓
-Buffer planning
+MemoryPlan
       ↓
 ExecutionPlan
       ↓
@@ -28,65 +29,105 @@ PlannedExecutor
 benchmark evidence
 ```
 
-Do not implement reuse or make performance claims before measurement/lifetime semantics are explicit.
+Do not make performance claims before measurement and resource semantics are explicit.
 
-## Stage 1 contract
+## Measurement contract
 
 ### Benchmarking
 
 - use a monotonic high-resolution timer;
 - warmup count is explicit and excluded;
-- measured repeats and iterations-per-repeat are explicit positive integers;
-- report per-iteration samples and summary statistics;
+- repeats and iterations-per-repeat are explicit positive integers;
+- report per-iteration samples and median/mean/min/max;
 - do not use absolute speed thresholds in unit tests;
-- benchmark setup/compile/planning time must remain distinguishable from steady-state execution when later compared.
+- planning/capture/lowering time must remain distinguishable from steady-state execution;
+- a slower planned runtime is valid evidence and must not be hidden.
 
 ### Profiling
 
-- profiling is opt-in and must not alter numerical results;
-- record one event per `LoweredProgram` instruction;
-- keep instruction index/kind/label, input/output Value ids and elapsed time inspectable;
-- ordinary execution must not pay timing work when no observer/profiler is requested;
-- profiling may use `LoweredExecutor` instrumentation but must not duplicate numerical execution semantics in a second executor.
+- profiling is opt-in;
+- profiling does not change numerical results;
+- one event per `LoweredProgram` instruction;
+- instruction index/kind/label/input/output Value ids remain inspectable;
+- ordinary `LoweredExecutor` execution does not pay per-instruction timing overhead.
 
-### Value lifetime analysis
+## Lifetime contract
 
-For each Graph Value compute:
+Two lifetime views intentionally coexist.
 
-```text
-birth_instruction
-last_use_instruction
-ownership flags
-shape / dtype / device metadata
-```
+### Instruction-level
+
+`ValueLifetimeAnalysis` describes lowered instruction boundaries.
 
 Rules:
 
-- graph input/constant birth = -1;
-- graph outputs live through boundary = `len(instructions)`;
-- explicitly retained/saved Values also live through boundary;
-- intermediate fused node outputs remain analyzable because v0.14 reference fusion materializes them;
-- every referenced runtime Value must have a valid producer/input/constant origin;
-- malformed producer/lifetime situations fail explicitly.
+- input/constant birth = -1;
+- Graph outputs remain live through execution boundary;
+- retained/AOT saved Values remain live through execution boundary;
+- fused internal Values remain visible because the reference fusion path materializes them.
 
-## Future buffer-planning rules
+### Node-level buffer interval
 
-When Stage 2 begins, reuse is allowed only if all are explicit:
+`BufferInterval` describes optimized Graph node positions so reuse may be reasoned about inside one `PointwiseFusion`.
+
+No buffer reuse before last node-level use.
+
+## Buffer planning rules
+
+A reusable planner slot is allowed only when all are explicit:
 
 ```text
+producer belongs to PointwiseFusion
+not Graph output
+not retained/AOT saved Value
+exact shape equality
+exact dtype equality
+exact device equality
 non-overlapping lifetimes
-compatible shape/numel
-same dtype
-same device
-not externally owned input/constant/output
-not retained for AOT backward
 ```
 
-Buffer assignment must be plan data, never hidden mutation.
+The first algorithm is deterministic greedy reuse.
 
-## Correctness references
+Never assign these to a reusable planner slot:
 
-For any runtime optimization path:
+- external inputs;
+- captured constants;
+- graph outputs;
+- retained forward Values;
+- ExternalOp outputs.
+
+Buffer assignment is plan data, not hidden mutation.
+
+## PlannedExecutor rules
+
+- `PlannedExecutor` remains first-order and executes under no-grad semantics;
+- only add/mul/relu inside `PointwiseFusion` may currently use preallocated `out=` destinations;
+- `ExternalOp` always continues through Dispatcher;
+- a fresh physical slot pool is allocated for each executor call;
+- returned output from an earlier call must not alias a later call's slot pool;
+- explicitly requested intermediate Values must have been retained in the `ExecutionPlan`;
+- CPU/EDU placement must remain correct;
+- runtime metrics are inspectable separately from wall-clock timing.
+
+## AOT integration contract
+
+Forward planning must preserve every v0.13 saved Value required by backward.
+
+Required chain:
+
+```text
+AOT source saved ids
+      ↓
+LoweringResult.mapped_value_id
+      ↓
+ExecutionPlan(retained lowered ids)
+      ↓
+PlannedExecutor.run_with_values
+      ↓
+planned backward executor
+```
+
+Correctness oracle:
 
 ```text
 GraphInterpreter
@@ -96,44 +137,68 @@ LoweredExecutor
 PlannedExecutor
 ```
 
-AOT forward/backward integration remains mandatory.
+and:
+
+```text
+eager Autograd gradients
+      ==
+AOT reference gradients
+      ==
+planned backward gradients
+```
+
+## Capture identity invariant
+
+During an active capture, every observed Tensor object must remain strongly referenced by the session while object identity is used for the runtime mapping.
+
+Do not regress to a bare:
+
+```text
+id(tensor) -> Value
+```
+
+map without lifetime protection. Python object ids may be recycled after GC and can otherwise create multiple producer nodes for one Graph Value.
 
 ## Performance-reporting rules
 
-- repeated samples, not single-shot timings;
+- repeated samples, not single-shot timing;
 - median is the primary latency summary;
-- also expose min/max/mean or distribution information;
-- compare identical inputs and workload structure;
-- allocation/peak-live metrics are separate from wall-clock timing;
-- a slower result is valid and must not be hidden;
-- no PyTorch performance-parity claim.
+- min/max/mean remain visible;
+- compare identical workload/input structure;
+- allocation/reuse/peak-live metrics are separate from wall-clock timing;
+- fewer instructions or fewer buffers is not itself a latency claim;
+- do not claim PyTorch performance parity.
 
 ## Non-goals
 
-- CUDA/Triton/C++ kernel generation;
+- CUDA/Triton/C++ code generation;
 - GPU timing;
-- production allocator;
-- asynchronous streams;
+- production caching allocator;
+- async streams/events;
 - multithreaded scheduler;
 - symbolic-shape planner;
+- arbitrary alias/mutation optimization;
+- production profiler;
 - benchmark cherry-picking.
 
 ## Testing contract
 
-Required Stage 1 tests:
+Required v0.15 tests cover:
 
-- benchmark config validation;
-- exact warmup/repeat call counts;
-- report statistic consistency without absolute latency assertions;
-- profiled vs ordinary lowered numerical equivalence;
-- event count/order/kind/Value ids;
-- lifetime birth/last-use for inputs/intermediates/outputs/constants;
-- graph-output boundary extension;
-- retained/AOT saved-value boundary extension;
-- fused internal Value lifetime handling;
-- malformed lifetime/reference failures;
-- CPU/EDU structural parity where relevant;
-- all 221 historical tests remain green.
+- benchmark validation/call counts/statistics;
+- profiler numerical equivalence and event structure;
+- instruction-level lifetimes;
+- AOT retained lifetime extension;
+- exact-spec non-overlapping slot reuse;
+- output/retained exclusion from reuse;
+- deterministic plan formatting;
+- PlannedExecutor CPU/EDU equivalence;
+- ExternalOp Dispatcher preservation;
+- cross-run slot-pool isolation;
+- planned runtime metrics;
+- planned AOT forward/backward equivalence;
+- capture object-id recycling regression;
+- all historical tests.
 
 Run:
 
@@ -141,15 +206,39 @@ Run:
 python -m unittest discover -s tests -v
 ```
 
+Current validated implementation result:
+
+```text
+247 tests
+OK
+```
+
+## Documentation contract
+
+Before freeze review:
+
+```text
+README.md
+version.md
+Agents.md
+MANIFEST.txt
+docs/RUNTIME_PERFORMANCE.md
+examples/18_runtime_performance.py
+```
+
+## Frozen branch rule
+
+After status becomes `frozen`, only documentation corrections, tests clarifying promised v0.15 behavior, or narrow fixes inside this version boundary are allowed. New architecture belongs in v1.0 or a later explicitly planned branch.
+
 ## Definition of Done
 
-Freeze v0.15 only after:
+Freeze only after:
 
-- benchmark/profiling/lifetime layers are stable;
-- conservative buffer planning and ExecutionPlan exist;
-- PlannedExecutor exists and matches references;
-- AOT saved Values remain correct;
-- allocation/reuse/peak-live metrics are inspectable;
-- docs/example/manifest/version are complete;
-- exact final `v0.15` HEAD CI is green;
-- validated tree is integrated into `main`.
+- runtime measurement/lifetime/planning layers are complete;
+- PlannedExecutor and AOT integration proofs pass;
+- docs/example/manifest are complete;
+- exact release-candidate HEAD CI is green;
+- `version.md` and this file are switched to frozen;
+- exact frozen-head CI is green;
+- validated tree is integrated into `main`;
+- main canonical roadmap advances to v1.0.
