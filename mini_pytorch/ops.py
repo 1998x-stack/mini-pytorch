@@ -99,6 +99,11 @@ class Pow(Function):
     @staticmethod
     def backward(ctx: Context, grad_output):
         (a,) = ctx.saved_tensors
+        if ctx.exponent == 0:
+            # x**0 is constant on the represented real-valued domain. Avoid
+            # evaluating 0 * x**-1, which produces NaN at x=0 even though the
+            # derivative should be exactly zero.
+            return (np.zeros_like(a, dtype=np.result_type(a, grad_output)),)
         return (grad_output * ctx.exponent * (a ** (ctx.exponent - 1)),)
 
 
@@ -198,6 +203,13 @@ class Transpose(Function):
     @staticmethod
     def forward(ctx: Context, a, *, dim0: int, dim1: int):
         ndim = a.ndim
+        if ndim == 0:
+            raise IndexError("transpose expects at least one dimension")
+        for dim in (dim0, dim1):
+            if dim < -ndim or dim >= ndim:
+                raise IndexError(
+                    f"dimension out of range (expected to be in range of [{-ndim}, {ndim - 1}], got {dim})"
+                )
         dim0 = dim0 % ndim
         dim1 = dim1 % ndim
         ctx.dim0, ctx.dim1 = dim0, dim1
