@@ -1,219 +1,115 @@
-# mini-pytorch v0.13
+# mini-pytorch v0.14
 
 ## Version identity
 
-- **Branch:** `v0.13`
-- **Previous version:** `v0.12`
-- **Theme:** AOTAutograd-like Graph Differentiation
-- **Status:** **frozen historical learning snapshot**
-- **Package version:** `0.13.0`
-- **Validated regression baseline:** **206/206 tests passed**
+- **Branch:** `v0.14`
+- **Previous version:** `v0.13`
+- **Theme:** Lowering / Fusion / Inductor-like Concepts
+- **Status:** active development
+- **Package version target:** `0.14.0`
+- **Starting regression baseline:** **206/206 tests passed**
 
-v0.13 answers:
+v0.14 asks:
 
-> Once forward execution is explicit Graph data, how can reverse-mode differentiation itself become an explicit graph program instead of remaining opaque eager VJP execution?
+> Once forward and backward are explicit Graph programs, how can compiler passes analyze and transform those graphs into a lower-level execution plan without changing semantics?
 
-## Core delta from v0.12
+## Core delta from v0.13
 
 ```text
-v0.12
-forward Graph + guards/cache
-
 v0.13
 forward Graph
-    ↓
-differentiate_graph
-    ↓
-DifferentiationSpec
-    ↓
-explicit saved-value ABI
-    ↓
++
 backward Graph
-```
 
-Runtime becomes:
-
-```text
-inputs
+v0.14
+Graph
   ↓
-forward Graph
-  ├── user output
-  └── saved forward Values
-             ↓
-       backward Graph
-       + grad_output
-             ↓
-       input gradients
+normalize / analyze
+  ↓
+DCE / constant folding
+  ↓
+fusion grouping
+  ↓
+LoweredProgram
+  ↓
+LoweredExecutor
 ```
 
-## Implemented components
+The original `GraphInterpreter` remains the reference executor.
+
+## Planned compiler passes
 
 ```text
-DifferentiationSpec
-AOTContext
-AOTForwardResult
-AOTProgram
-AOTDifferentiationError
-differentiate_graph(graph)
-aot_compile(fn, *example_inputs)
+normalize_graph(graph)
+analyze_graph(graph)
+eliminate_dead_code(graph)
+fold_constants(graph)
+plan_fusions(graph)
+lower_graph(graph)
 ```
 
-`GraphInterpreter.run_with_values()` exposes selected forward Values so saved tensors are an explicit program interface rather than hidden Python closure state.
+## Initial fusion scope
 
-## Supported VJP rules
+Only pure pointwise chains are fusion candidates:
 
 ```text
 aten::add.Tensor
 aten::mul.Tensor
-aten::matmul.default   # 2-D
 aten::relu.default
-aten::sum.default
 ```
 
-Compiler VJP policy emits normal logical ops plus first-order helper ops:
+Initial barriers remain external operations:
 
 ```text
-aot::unbroadcast.default
-aot::sum_backward.default
-aot::transpose2d.default
-aot::relu_backward.default
+matmul
+sum
+conv / pool
+aot::unbroadcast
+aot::sum_backward
+aot::transpose2d
+aot::relu_backward
 ```
 
-All helper operators are registered for CPU and EDU and execute through Dispatcher.
+## Required correctness proof
 
-## Saved forward values
-
-The backward interface explicitly records deterministic forward Value ids needed by VJP rules.
-
-Examples:
+For supported programs:
 
 ```text
-mul     → operands
-matmul  → operands
-relu    → forward input
-add     → shape metadata only
-sum     → input shape + reduction attributes
-```
-
-## Broadcast and reduction semantics
-
-`add` and `mul` gradients use explicit `aot::unbroadcast.default` nodes to reduce broadcasted contributions back to the exact input shape.
-
-`sum` gradients use explicit `aot::sum_backward.default` nodes carrying:
-
-```text
-input_shape
-axis
-keepdims
-```
-
-## Shared-value gradient accumulation
-
-If one forward Value receives multiple reverse contributions, v0.13 emits explicit `aten::add.Tensor` nodes in the backward Graph.
-
-This makes accumulation graph data rather than hidden Engine state.
-
-## MatMul boundary
-
-The existing framework MatMul supports 2-D operands, so the AOT rule preserves that exact boundary:
-
-```text
-dA = dY @ B.T
-dB = A.T @ dY
-```
-
-Transposes are explicit `aot::transpose2d.default` nodes.
-
-## First-order boundary
-
-`AOTProgram.backward()` executes the explicit backward Graph under `no_grad`.
-
-Therefore:
-
-```text
-backward is explicit Graph data
-```
-
-but:
-
-```text
-higher-order differentiation is NOT supported
-```
-
-Returned gradient Tensors have no `GradFn`.
-
-## Correctness proof
-
-The v0.13 test suite verifies:
-
-```text
-AOT forward output == eager forward output
-```
-
-and:
-
-```text
-explicit backward-Graph gradients
+GraphInterpreter(graph)
 ==
-eager AutogradEngine gradients
+LoweredExecutor(lower_graph(graph))
 ```
 
-Coverage includes:
-
-- add + sum;
-- mul broadcasting;
-- ReLU;
-- 2-D MatMul;
-- shared-subgraph accumulation;
-- non-grad graph inputs;
-- non-scalar explicit grad seeds;
-- axis/keepdims reduction;
-- CPU/EDU device preservation;
-- unsupported-op errors;
-- first-order/no-GradFn boundary.
-
-## Important files
+and for AOT programs:
 
 ```text
-mini_pytorch/compiler/aot.py
-mini_pytorch/aot_kernels.py
-mini_pytorch/compiler/interpreter.py
-mini_pytorch/operator_registry.py
-
-tests/test_aot_autograd.py
-docs/AOT_AUTOGRAD.md
-examples/16_aot_autograd.py
+AOT forward Graph → lowered forward output
+AOT backward Graph → lowered input gradients
 ```
 
-Recommended reading order:
+must match the v0.13 reference behavior.
 
-```text
-compiler/aot.py
-    ↓
-aot_kernels.py
-    ↓
-operator_registry.py
-    ↓
-compiler/interpreter.py
-    ↓
-test_aot_autograd.py
-    ↓
-AOT_AUTOGRAD.md
-    ↓
-16_aot_autograd.py
-```
+## Design rules
+
+- source Graphs are never mutated by passes;
+- analysis and fusion decisions are inspectable;
+- DCE assumes only the documented pure logical-op subset;
+- constant folding is restricted to safe pure constants;
+- pointwise fusion must respect use-count/dependency structure;
+- unsupported nodes remain `ExternalOp` when safe;
+- CPU/EDU logical device identity must be preserved;
+- reduced node count is not a performance claim;
+- no Triton/CUDA code generation in this version.
 
 ## Non-goals
 
-v0.13 does not implement:
-
-- production PyTorch AOTAutograd;
-- arbitrary mutation functionalization;
-- all-operator decompositions/VJPs;
-- symbolic shapes;
-- higher-order gradients;
-- compiler lowering/fusion/code generation.
+- production TorchInductor;
+- generated C++/CUDA/Triton kernels;
+- GPU scheduling/autotuning;
+- symbolic-shape lowering;
+- arbitrary mutation/alias optimization;
+- runtime memory planning or performance claims.
 
 ## Next version
 
-v0.14 should study **Lowering / Fusion / Inductor-like Concepts** now that both forward and backward are explicit graph programs.
+v0.15 will study runtime/performance mechanics after a stable lowered execution representation exists.
