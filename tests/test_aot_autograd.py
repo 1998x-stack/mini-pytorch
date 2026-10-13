@@ -24,6 +24,7 @@ class TestAOTAutograd(unittest.TestCase):
         for got, expected in zip(grads, eager_grads):
             np.testing.assert_allclose(got.data, expected)
             self.assertFalse(got.requires_grad)
+            self.assertEqual(str(got.device), device)
         return program
 
     def test_add_sum_matches_eager(self):
@@ -47,8 +48,13 @@ class TestAOTAutograd(unittest.TestCase):
         )
 
     def test_shared_subgraph_accumulates_gradient_explicitly(self):
-        program = self._compare(lambda x: ((x * x) + (x * x)).sum(), [np.array([2.0, -3.0])])
-        # Reverse graph must contain explicit add nodes for multiple contributions.
+        def fn(x):
+            shared = x * x
+            return (shared + shared).sum()
+
+        program = self._compare(fn, [np.array([2.0, -3.0])])
+        # The same forward Value receives two reverse contributions; the
+        # backward Graph must materialize an explicit add for accumulation.
         self.assertGreaterEqual(program.backward_graph.format().count("aten::add.Tensor"), 1)
 
     def test_non_grad_input_is_excluded_from_backward_outputs(self):
@@ -64,11 +70,18 @@ class TestAOTAutograd(unittest.TestCase):
         self.assertEqual(len(grads), 1)
         np.testing.assert_allclose(grads[0].data, [7.0, 8.0])
 
-    def test_cpu_and_edu_match(self):
+    def test_cpu_and_edu_share_structure_but_preserve_device_metadata(self):
         arrays = [np.array([-2.0, 1.5, 3.0])]
         cpu = self._compare(lambda x: (x.relu() * x).sum(), arrays, device="cpu")
         edu = self._compare(lambda x: (x.relu() * x).sum(), arrays, device="edu")
-        self.assertEqual(cpu.backward_graph.format(), edu.backward_graph.format())
+        self.assertEqual(
+            [node.operator for node in cpu.backward_graph.nodes],
+            [node.operator for node in edu.backward_graph.nodes],
+        )
+        cpu_devices = {v.metadata.get("device") for v in cpu.backward_graph.values.values()}
+        edu_devices = {v.metadata.get("device") for v in edu.backward_graph.values.values()}
+        self.assertEqual(cpu_devices, {"cpu"})
+        self.assertEqual(edu_devices, {"edu"})
 
     def test_non_scalar_output_accepts_explicit_grad_output(self):
         fn = lambda x: x * x
@@ -101,7 +114,8 @@ class TestAOTAutograd(unittest.TestCase):
 
     def test_sum_axis_keepdims_matches_eager(self):
         def fn(x):
-            return (x.sum(axis=1, keepdims=True) * x.sum(axis=1, keepdims=True)).sum()
+            reduced = x.sum(axis=1, keepdims=True)
+            return (reduced * reduced).sum()
 
         self._compare(fn, [np.arange(6, dtype=float).reshape(2, 3)])
 
