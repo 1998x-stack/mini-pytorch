@@ -33,13 +33,44 @@ class _CaptureSession:
     def __init__(self, example_inputs: tuple["Tensor", ...]) -> None:
         self.graph = Graph()
         self._tensor_values: dict[int, int] = {}
-        self._example_input_ids = {id(tensor) for tensor in example_inputs}
+        # Keep every observed Tensor alive for the full capture session.
+        #
+        # Python may recycle ``id(obj)`` immediately after a temporary object is
+        # garbage-collected.  A bare id->Value map can therefore alias two
+        # distinct eager temporaries in a long expression and assign multiple
+        # producer nodes to one Graph Value.  Strong references make object-id
+        # identity stable for the lifetime of this capture, while the explicit
+        # ``is`` check below protects the invariant if bookkeeping ever changes.
+        self._tensor_objects: dict[int, "Tensor"] = {}
         for tensor in example_inputs:
             value = self.graph.add_input(metadata=tensor_metadata(tensor))
-            self._tensor_values[id(tensor)] = value.id
+            self._remember_tensor(tensor, value.id)
+
+    def _lookup_tensor_value(self, tensor: "Tensor") -> int | None:
+        key = id(tensor)
+        known_object = self._tensor_objects.get(key)
+        if known_object is None:
+            return None
+        if known_object is not tensor:
+            raise RuntimeError(
+                "capture tensor identity collision: Python object id was reused "
+                "while the prior Tensor was still registered"
+            )
+        return self._tensor_values[key]
+
+    def _remember_tensor(self, tensor: "Tensor", value_id: int) -> None:
+        key = id(tensor)
+        known_object = self._tensor_objects.get(key)
+        if known_object is not None and known_object is not tensor:
+            raise RuntimeError(
+                "capture tensor identity collision: cannot bind two live Tensor "
+                "objects to the same Python id"
+            )
+        self._tensor_objects[key] = tensor
+        self._tensor_values[key] = int(value_id)
 
     def _tensor_ref(self, tensor: "Tensor", *, operator: str) -> ValueRef:
-        known = self._tensor_values.get(id(tensor))
+        known = self._lookup_tensor_value(tensor)
         if known is not None:
             return ValueRef(known)
 
@@ -62,7 +93,7 @@ class _CaptureSession:
             constant,
             metadata=tensor_metadata(tensor),
         )
-        self._tensor_values[id(tensor)] = value.id
+        self._remember_tensor(tensor, value.id)
         return ValueRef(value.id)
 
     def encode(self, value: Any, *, operator: str) -> Any:
@@ -92,11 +123,11 @@ class _CaptureSession:
         from ..tensor import Tensor
 
         if isinstance(value, Tensor):
-            known = self._tensor_values.get(id(value))
+            known = self._lookup_tensor_value(value)
             if known is not None:
                 return ValueRef(known)
             out = self.graph.add_intermediate(metadata=tensor_metadata(value))
-            self._tensor_values[id(value)] = out.id
+            self._remember_tensor(value, out.id)
             return ValueRef(out.id)
         if isinstance(value, tuple):
             return tuple(self.encode_output(x, operator=operator) for x in value)
