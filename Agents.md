@@ -1,18 +1,41 @@
-# Agents.md — mini-pytorch v1.0 Frozen Release Contract
+# Agents.md — mini-pytorch Canonical Development Contract
 
-> Branch `v1.0` is a frozen historical/integrated learning snapshot.
+> Mandatory for future work on `main` or any new version branch.
+>
+> `main` contains the newest integrated, validated framework state. Historical version branches are frozen learning snapshots.
 
-## 1. Branch identity
+## 1. Current project state
 
-- Branch: `v1.0`
-- Previous: `v0.15`
-- Theme: Integrated Architecture
-- Status: **frozen**
-- Package version: `1.0.0`
-- Frozen test baseline: **251 tests / OK**
-- Validated release-candidate HEAD: `7a8391f0959e0671e2bf40720e67296793048947`
+- Latest integrated release: **v1.0.0**
+- Integrated test baseline: **251 tests / OK**
+- Integrated example: `examples/19_integrated_architecture.py` / PASS
+- Original v0.x → v1.0 learning sequence: **complete**
 
-## 2. Frozen architecture
+There is intentionally no automatic `v1.1` roadmap.
+
+## 2. Mission
+
+mini-pytorch is a NumPy-first educational framework for exposing deep-learning framework architecture one ownership boundary at a time.
+
+Priority order:
+
+```text
+architectural clarity
+      ↓
+correctness / invariants
+      ↓
+inspectability
+      ↓
+reference proofs / tests
+      ↓
+measurement
+      ↓
+optimization
+```
+
+Do not optimize for API breadth or upstream-source mimicry.
+
+## 3. Integrated v1.0 architecture
 
 ```text
 Tensor / Storage / Device
@@ -40,99 +63,215 @@ Lifetime / MemoryPlan / ExecutionPlan
 PlannedExecutor
 ```
 
-The ownership/failure boundaries in `docs/ARCHITECTURE_V1.md` are part of the frozen v1.0 contract.
+The detailed ownership/failure audit lives in `docs/ARCHITECTURE_V1.md`.
 
-## 3. Validation contract
+## 4. Preserved architecture invariants
 
-The release candidate passed:
-
-```bash
-python -m unittest discover -s tests -v
-python examples/19_integrated_architecture.py
-```
-
-with:
+### Tensor / memory
 
 ```text
-251 tests / OK
-integrated architecture example / PASS
+Storage owns allocation + shared version
+Tensor owns shape / stride / offset + autograd-facing state
+Device describes logical placement
 ```
 
-The exact frozen HEAD must pass the same workflow before `main` integration.
+Compiler/runtime planning must not redefine Tensor view/storage semantics.
 
-## 4. Frozen artifacts
+### Dispatcher / backend
 
-Key release artifacts:
+```text
+logical operator
+      ↓
+Dispatcher policy
+      ↓
+backend kernel
+```
+
+Backend numerical kernels do not own Module, Optimizer, DDP, GraphCache or checkpoint policy.
+
+### Autograd
+
+`AutogradEngine` owns eager backward execution. Saved-tensor version safety, graph lifetime, hooks and leaf-grad ownership remain explicit separate concerns.
+
+### Training/runtime
+
+Module organizes parameters/buffers. Optimizer consumes gradients. Data provides batches. Runtime owns reproducible checkpoint/RNG/progress state.
+
+### Distributed
+
+DDP/Reducer/ProcessGroup synchronize gradients outside optimizer algorithms and numerical kernels.
+
+### Compiler
+
+```text
+capture
+  ↓
+Graph IR
+  ↓
+guards/cache
+  ↓
+AOT differentiation
+  ↓
+analysis/transforms/lowering
+  ↓
+LoweredProgram
+```
+
+Graph IR does not bake in backend/Autograd dispatch policy. Source Graphs are not silently mutated by transformation passes.
+
+### Planned runtime
+
+```text
+LoweredProgram = what executes
+ExecutionPlan = how runtime resources are assigned
+```
+
+ExternalOps stay Dispatcher-owned; safe temporary reuse remains constrained by liveness/ownership rules.
+
+## 5. Historical branch rule
+
+Branches `v0.1` through `v1.0` are learning snapshots.
+
+Allowed changes on frozen branches:
+
+- documentation corrections;
+- tests clarifying already-promised behavior;
+- narrow fixes inside the historical version contract.
+
+Future mechanisms do not belong on a frozen branch.
+
+## 6. Main branch rule
+
+`main` must remain the newest integrated validated framework state.
+
+Do not intentionally leave validated framework work only on a version branch after release integration.
+
+Canonical project docs on `main` are:
 
 ```text
 README.md
-version.md
 Agents.md
-MANIFEST.txt
-pyproject.toml
-mini_pytorch/_version.py
-
-docs/ARCHITECTURE.md
+Plan.md
 docs/ARCHITECTURE_V1.md
-docs/API_AUDIT.md
 docs/LEARNING_PATH.md
-docs/PYTORCH_MAPPING.md
 docs/ROADMAP.md
-
-examples/19_integrated_architecture.py
-tests/test_v1_integration.py
+docs/PYTORCH_MAPPING.md
 ```
 
-## 5. Rules for future changes on this branch
+## 7. Post-v1.0 change gate
 
-Allowed only:
+Before creating another version, write down all of the following:
 
-- documentation corrections;
-- tests that clarify already-promised v1.0 behavior;
-- narrowly scoped fixes inside the frozen architecture contract.
+1. **Missing mental model** — what important architecture question cannot v1.0 answer?
+2. **Owning boundary** — which existing layer should own the new mechanism?
+3. **Minimal proof** — what is the smallest executable implementation that teaches it?
+4. **Invariants** — what must remain true across existing layers?
+5. **Non-goals** — what tempting adjacent work is explicitly excluded?
+6. **Reference validation** — what existing layer remains the correctness oracle?
 
-Forbidden:
+If those cannot be stated clearly, do not create a new version.
 
-- new subsystems;
-- new backend families;
-- compiler roadmap expansion;
-- feature-parity additions;
-- future-version mechanisms.
-
-## 6. Compatibility / mapping rule
-
-Do not rewrite v1.0 history because upstream PyTorch later changes terminology or implementation.
-
-`docs/PYTORCH_MAPPING.md` records conceptual correspondence, not a source/API parity promise.
-
-## 7. Future development rule
-
-Future development must:
+## 8. New-version workflow, if justified
 
 ```text
-start from latest validated main
-      ↓
-identify a genuinely missing mental model
-      ↓
-write a new roadmap/branch contract
-      ↓
-create a new version branch
-```
-
-There is no automatic `v1.1` queue.
-
-## 8. Integration sequence
-
-After exact frozen-head CI succeeds:
-
-```text
-verify main → v1.0 is pure fast-forward
-      ↓
-fast-forward main to frozen v1.0
-      ↓
+validated main
+   ↓
+define new mental model in Plan.md
+   ↓
+create vX.Y from exact main HEAD
+   ↓
+create branch version.md + Agents.md immediately
+   ↓
+implement readable reference mechanism
+   ↓
+add invariant/reference/integration tests
+   ↓
+complete docs/example
+   ↓
+exact release-candidate HEAD CI green
+   ↓
+freeze branch
+   ↓
+exact frozen HEAD CI green
+   ↓
+fast-forward into main
+   ↓
 restore canonical main README / Agents / Plan
-      ↓
-run exact main-head CI
+   ↓
+exact main HEAD CI green
 ```
 
-The frozen `v1.0` branch itself must then remain a stable learning snapshot.
+Never create a new feature branch from an older frozen version when `main` is newer.
+
+## 9. Testing contract
+
+Full regression:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The current CI additionally runs:
+
+```bash
+python examples/19_integrated_architecture.py
+```
+
+Every meaningful change should include, where applicable:
+
+- happy path;
+- invariant/property proof;
+- error-path proof;
+- numerical/reference validation;
+- cross-layer integration proof.
+
+Never claim a test count or performance result unless the exact reported code state actually ran.
+
+## 10. Performance-reporting contract
+
+Performance evidence requires:
+
+```text
+explicit warmup
+repeated samples
+same workload/input structure
+median/range or distribution
+planning/compile time separated from steady-state execution
+allocation metrics separated from wall-clock timing
+```
+
+A lower instruction/allocation count is not automatically a speedup.
+
+## 11. PyTorch mapping contract
+
+`docs/PYTORCH_MAPPING.md` maps responsibilities and concept families.
+
+Never turn that mapping into unsupported claims of:
+
+- source equivalence;
+- exact API parity;
+- edge-case parity;
+- production performance parity.
+
+Upstream PyTorch can evolve while frozen historical branches remain historical snapshots.
+
+## 12. Explicit original-project non-goals
+
+The integrated v1.0 learning release intentionally does not include:
+
+- real CUDA/Triton codegen;
+- symbolic dynamic-shape compiler;
+- multiprocessing/prefetch/pinned-memory DataLoader;
+- NCCL/network distributed execution;
+- production caching allocator;
+- whole-Python bytecode compiler;
+- complete higher-order autodiff;
+- feature parity with PyTorch.
+
+Future work may revisit one of these only after it passes the post-v1.0 change gate.
+
+## 13. Current directive
+
+The project is currently in **stable integrated v1.0 state**.
+
+Default action is maintenance, study, benchmarking or documentation refinement—not automatic feature expansion.

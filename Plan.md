@@ -1,10 +1,10 @@
-# mini-pytorch — Architecture-Driven Development Plan
+# mini-pytorch — Canonical Development Plan
 
-> Canonical roadmap for `main`.
+> `main` roadmap after the v1.0 integrated release.
 >
-> **Invariant:** `main` is always the newest integrated, validated framework state. Historical version branches are readable learning snapshots.
+> **Invariant:** `main` is the newest integrated, validated framework state. Historical version branches remain readable learning snapshots.
 
-# 1. Completed architecture chain
+# 1. Original architecture roadmap — complete
 
 ```text
 Tensor / Dynamic Autograd
@@ -32,357 +32,355 @@ AOT-style Graph Differentiation
 Lowering / Fusion
       ↓
 Runtime / Performance Mechanics
+      ↓
+Integrated Architecture
 ```
-
-The planned 0.x mechanism-building sequence is complete.
 
 | Version | Theme | Key validated mechanism | Tests |
 |---|---|---|---:|
-| v0.1 | Dynamic Autograd | Tensor → Function → backward | historical |
-| v0.2 | Optimizer/Scheduler | groups/state/LR scheduling | historical |
-| v0.3 | Data pipeline | Dataset/Sampler/DataLoader | historical |
-| v0.4 | Tensor memory | Storage/stride/views/version | historical |
-| v0.5 | Dispatcher | schema/keys/redispatch | 80 |
-| v0.6 | CNN ops | Conv/Pool/BN/Dropout | 90 |
-| v0.7 | Device/Backend | CPU + EDU placement | 103 |
-| v0.8 | Autograd Engine | lifetime/hooks/retain_graph | 123 |
+| v0.1 | Dynamic Autograd | Tensor → Function/GradFn → backward | historical |
+| v0.2 | Optimizer/Scheduler | parameter groups / state / LR scheduling | historical |
+| v0.3 | Data pipeline | Dataset / Sampler / DataLoader | historical |
+| v0.4 | Tensor memory | Storage / stride / views / version safety | historical |
+| v0.5 | Dispatcher | schema / DispatchKey / redispatch | 80 |
+| v0.6 | CNN ops | Conv / Pool / BN / Dropout | 90 |
+| v0.7 | Device/Backend | CPU + EDU logical placement | 103 |
+| v0.8 | Autograd Engine | lifetime / hooks / retain_graph | 123 |
 | v0.9 | Training Runtime | deterministic checkpoint resume | 140 |
-| v0.10 | DDP | reducer/buckets/all-reduce equivalence | 159 |
-| v0.11 | Graph IR | eager capture/replay | 176 |
-| v0.12 | Guards/Cache | specialization/recompile | 192 |
-| v0.13 | AOTAutograd-like | explicit backward Graph | 206 |
-| v0.14 | Lowering/Fusion | analysis → transforms → LoweredProgram | 221 |
-| v0.15 | Runtime/Performance | profiling → lifetime → ExecutionPlan | **247** |
+| v0.10 | DDP | ProcessGroup / reducer / bucket semantics | 159 |
+| v0.11 | Graph IR | Dispatcher-level capture/replay | 176 |
+| v0.12 | Guards/Cache | specialization / guard failure / recompile | 192 |
+| v0.13 | AOT differentiation | explicit backward Graph + saved-value ABI | 206 |
+| v0.14 | Lowering/Fusion | analysis / transforms / LoweredProgram | 221 |
+| v0.15 | Runtime/Performance | profiling / lifetime / ExecutionPlan | 247 |
+| v1.0 | Integrated Architecture | architecture audit + cross-layer proof | **251** |
+
+The original feature-building sequence is complete.
 
 ---
 
-# 2. v0.15 completed architecture
+# 2. v1.0 integrated architecture
 
 ```text
+Python API
+   ↓
+Tensor / Storage / Device
+   ↓
+Dispatcher / Backend
+   ↓
+AutogradEngine
+   ↓
+Module / Optimizer / Data
+   ↓
+Runtime / Checkpoint / RNG
+   ↓
+Distributed / DDP
+
+Python Tensor function
+   ↓
+Capture / Signatures / Guards / Cache
+   ↓
+AOT forward/backward Graphs
+   ↓
+Analysis / Lowering / Fusion
+   ↓
 LoweredProgram
-      ↓
-Benchmark / per-instruction profiler
-      ↓
-ValueLifetimeAnalysis
-      ↓
-node-level BufferInterval analysis
-      ↓
-MemoryPlan
-  ├── BufferSpec
-  ├── BufferSlot
-  └── value → slot
-      ↓
-ExecutionPlan
-      ↓
+   ↓
+Benchmark / Profiler / Lifetime analysis
+   ↓
+MemoryPlan / ExecutionPlan
+   ↓
 PlannedExecutor
 ```
 
-Validated properties:
+Core distinction:
 
-- benchmark warmup/repeats are explicit;
-- no absolute latency threshold is used as a unit-test correctness condition;
-- profiler produces one ordered event per lowered instruction;
-- instruction-level and node-level lifetime views are explicit;
-- graph outputs and AOT retained Values escape temporary lifetime;
-- exact shape/dtype/device compatibility gates reuse;
-- overlapping lifetimes never share a slot;
-- eligible pointwise temporaries may share a physical slot;
-- only pointwise fusion add/mul/relu currently use preallocated `out=` execution;
-- ExternalOps remain Dispatcher-owned;
-- slot pools are isolated across executor calls;
-- CPU/EDU numerical/device semantics remain correct;
-- AOT saved Values survive planned forward execution;
-- planned backward gradients match eager/AOT references;
-- capture object-id recycling cannot merge distinct Graph Values;
-- performance measurement is reported separately from allocation/fusion metrics.
+```text
+Tensor semantics
+!=
+operator dispatch
+!=
+backward execution
+!=
+training orchestration
+!=
+distributed synchronization
+!=
+compiler transformation
+!=
+runtime resource planning
+```
+
+The purpose of v1.0 is that all of these boundaries can now be explained and exercised without inventing another major subsystem.
 
 ---
 
-# 3. Current milestone — v1.0 Integrated Architecture 🎯
+# 3. v1.0 completion evidence
 
-## 3.1 Why v1.0 is consolidation, not another subsystem
-
-The project already contains all major architectural mechanisms intended for this learning sequence.
-
-Adding another large feature would reduce the clarity of the dependency chain. The next goal is therefore:
-
-> Can the entire system now be audited, explained and exercised as one coherent educational framework?
-
-v1.0 should turn this:
+Frozen version branch:
 
 ```text
-many individually correct version layers
+v1.0
+7f6ef6ebb5357d7b15954e780455976fbff3f6b3
 ```
 
-into this:
+Release gate:
+
+```bash
+python -m unittest discover -s tests -v
+python examples/19_integrated_architecture.py
+```
+
+Validated result:
 
 ```text
-one coherent architecture
-+
-one coherent learning path
-+
-one coherent release
+251 tests / OK
+integrated architecture example / PASS
 ```
 
----
-
-## 3.2 v1.0.1 — Architecture audit
-
-Walk the dependency graph from bottom to top:
-
-```text
-Storage / Device
-      ↓
-Tensor
-      ↓
-Dispatcher / Backend
-      ↓
-Autograd
-      ↓
-NN / Optimizer / Data
-      ↓
-Training Runtime / DDP
-      ↓
-Capture / Guards / AOT
-      ↓
-Lowering / ExecutionPlan
-```
-
-For each subsystem verify:
-
-- owner/responsibility;
-- inputs/outputs;
-- what it may depend on;
-- what must not depend on it;
-- failure semantics;
-- current educational simplifications.
-
-Deliverable:
+Integrated release artifacts include:
 
 ```text
 docs/ARCHITECTURE_V1.md
-```
-
-with one top-level dependency diagram and subsystem-specific sections.
-
----
-
-## 3.3 v1.0.2 — Public API / naming audit
-
-Inspect exported learning APIs from:
-
-```text
-mini_pytorch
-mini_pytorch.nn
-mini_pytorch.optim
-mini_pytorch.data
-mini_pytorch.distributed
-mini_pytorch.runtime
-mini_pytorch.compiler
-```
-
-Questions:
-
-- are names consistent with the mental model?
-- are obsolete aliases still exported?
-- are version-specific helpers accidentally public?
-- do error messages use consistent terminology?
-- do docs/examples import the supported path?
-
-Only small cleanup is allowed. Do not erase historical architecture merely to make the surface look more PyTorch-like.
-
----
-
-## 3.4 v1.0.3 — One end-to-end integrated example
-
-Create an example that crosses the major layers intentionally.
-
-Suggested structure:
-
-```text
-1. create model + data
-2. eager forward/backward + optimizer
-3. checkpoint/RNG state
-4. capture a supported inference/training subfunction
-5. guards/cache replay
-6. AOT forward/backward graph generation
-7. lowering/fusion
-8. execution planning
-9. PlannedExecutor run
-10. compare outputs/gradients with eager reference
-11. print architecture/runtime explanation
-```
-
-The example does not need to force every subsystem into one unrealistic workflow. It should clearly state which phases are training-time, compiler-time and runtime-time.
-
-Deliverable suggestion:
-
-```text
-examples/19_integrated_architecture.py
-```
-
----
-
-## 3.5 v1.0.4 — Cross-layer integration tests
-
-Add a small number of tests that prove the layers compose.
-
-Candidate proofs:
-
-### Tensor → Dispatcher → Backend → Autograd
-
-```text
-same logical op
-correct CPU/EDU execution
-correct gradient
-```
-
-### Module → Optimizer → Checkpoint → Resume
-
-```text
-train
-save
-fresh objects
-restore
-continue deterministically
-```
-
-### Capture → Guard → Cache → AOT → Lowering → Plan
-
-```text
-capture supported function
-cache specialization
-AOT backward
-lower both graphs
-plan both graphs
-compare eager/planned outputs + gradients
-```
-
-### DDP + model/runtime boundary
-
-Keep existing simulated DDP semantics intact; only add integration coverage if a real gap is found.
-
-Do not duplicate every historical test in a giant v1.0 test.
-
----
-
-## 3.6 v1.0.5 — PyTorch subsystem mapping
-
-Create a conceptual mapping document, not a claim of implementation parity.
-
-Suggested table:
-
-| mini-pytorch concept | Real PyTorch concept family | Important simplification |
-|---|---|---|
-| `Storage` + Tensor layout | TensorImpl / Storage | Python/NumPy educational model |
-| `Dispatcher` | PyTorch dispatcher / DispatchKey | tiny fixed key set |
-| `AutogradEngine` | autograd engine | single-process Python engine |
-| `Module` / `Parameter` | `torch.nn.Module` | limited hooks/buffers semantics |
-| `DataLoader` | PyTorch DataLoader | single-process |
-| `ProcessGroup` / DDP | c10d / DDP | deterministic simulation, no NCCL |
-| Graph capture/cache | Dynamo-like concepts | no Python bytecode guards |
-| AOT differentiation | AOTAutograd-like concepts | limited VJP registry |
-| lowering/fusion | Inductor-like concepts | no Triton/codegen |
-| ExecutionPlan | runtime/memory planning concepts | conservative NumPy runtime |
-
-Deliverable:
-
-```text
+docs/API_AUDIT.md
 docs/PYTORCH_MAPPING.md
+examples/19_integrated_architecture.py
+tests/test_v1_integration.py
 ```
 
-Use upstream concepts as learning references, not API compatibility promises.
-
 ---
 
-## 3.7 v1.0.6 — Documentation consistency pass
+# 4. Post-v1.0 mode
 
-Reconcile:
+There is **no automatic next version**.
+
+The project now defaults to:
 
 ```text
-README.md
-Plan.md
-Agents.md
-docs/ARCHITECTURE.md
-docs/LEARNING_PATH.md
-docs/ROADMAP.md
-all version-specific docs
+study
+architecture explanation
+bug fixes
+historical corrections
+benchmarks
+experiments that do not change the release contract
 ```
 
-Requirements:
-
-- no stale "next version" statements in canonical main docs;
-- historical docs may remain historically accurate;
-- current test baseline is consistent;
-- examples are numbered and referenced correctly;
-- terminology for Graph/LoweredProgram/ExecutionPlan is consistent;
-- performance disclaimers remain explicit.
+Creating a new version requires a new architectural question.
 
 ---
 
-## 3.8 v1.0.7 — Release-quality validation
+# 5. Gate for any future roadmap
 
-Before v1.0 freeze:
+Before a new version exists, write a proposal that answers six questions.
+
+## 5.1 Missing mental model
+
+What important framework mechanism cannot be understood from v1.0?
+
+Bad justification:
 
 ```text
-python -m unittest discover -s tests -v
+PyTorch has feature X, so mini-pytorch should also have X.
 ```
 
-Also manually validate the main educational examples that do not depend on external downloads.
-
-Required release checks:
-
-- exact branch-head CI green;
-- package version = `1.0.0`;
-- MANIFEST complete;
-- README shows v1.0 as integrated release;
-- no accidental development/temp branch is used as a base;
-- frozen historical branches remain unchanged except permitted corrections.
-
----
-
-# 4. v1.0 explicit non-goals
-
-v1.0 is not the place to add:
-
-- CUDA/Triton kernels;
-- symbolic dynamic-shape compiler;
-- production multiprocessing DataLoader;
-- NCCL/network DDP;
-- production caching allocator;
-- whole-Python compiler;
-- API feature parity with PyTorch;
-- benchmark marketing claims.
-
-If future experimentation continues after v1.0, it should start a new separately justified roadmap rather than silently expanding the original learning sequence.
-
----
-
-# 5. v1.0 Definition of Done
-
-v1.0 freezes only when all are true:
-
-1. top-level architecture documentation matches the real source dependency boundaries;
-2. public APIs/naming have been audited and any cleanup is tested;
-3. an integrated example traverses the major eager/compiler/runtime layers;
-4. cross-layer integration proofs are green;
-5. PyTorch concept mapping is explicit and caveated;
-6. canonical docs agree on architecture, test baseline and learning order;
-7. all historical tests plus v1.0 tests pass;
-8. exact release-head CI is green;
-9. branch is frozen and integrated back into main;
-10. no unsupported production or performance claim is present.
-
----
-
-# 6. Engineering sequence
+Good justification:
 
 ```text
-v0.14 Lowering / Fusion                    ✅
+There is an ownership/runtime/compiler concept that v1.0 cannot currently demonstrate.
+```
+
+## 5.2 Owning layer
+
+Where should the new mechanism live?
+
+```text
+Tensor / Storage
+Dispatcher / Backend
+Autograd
+Data / Runtime
+Distributed
+Compiler
+Planned runtime
+```
+
+If ownership is unclear, the feature is not ready for implementation.
+
+## 5.3 Minimal executable proof
+
+Define the smallest implementation that teaches the concept.
+
+Prefer:
+
+```text
+readable reference implementation
       ↓
-v0.15 Runtime / Performance Mechanics      ✅
+explicit invariants
       ↓
-v1.0  Integrated Architecture              🎯
+small integration proof
 ```
 
-The default next action is not to add another low-level mechanism. It is to make the existing architecture coherent enough that a reader can trace one Tensor expression from Python API to runtime execution and back through gradients without conceptual gaps.
+before optimization or broad API coverage.
+
+## 5.4 Correctness oracle
+
+Identify the reference behavior.
+
+Examples:
+
+```text
+NumPy numerical reference
+finite differences
+eager Tensor execution
+GraphInterpreter
+LoweredExecutor
+existing runtime/checkpoint behavior
+```
+
+A new optimized layer must not become its own unquestioned oracle.
+
+## 5.5 Non-goals
+
+List adjacent features explicitly excluded from the proposed version.
+
+This is required to preserve the one-dominant-mental-model rule.
+
+## 5.6 Validation plan
+
+Specify:
+
+```text
+unit tests
+invariant/property tests
+error paths
+reference/numerical proof
+cross-layer integration
+example/docs
+exact-head CI
+```
+
+Only after all six sections are credible should `Plan.md` be changed to introduce a new active milestone.
+
+---
+
+# 6. Possible research directions — not roadmap commitments
+
+The following remain deliberately outside v1.0. They are examples of possible future research questions, **not queued versions**:
+
+### Accelerator execution
+
+Potential question:
+
+> What additional ownership boundaries appear when asynchronous accelerator allocation, streams and kernels become real rather than logical-device simulation?
+
+Could involve CUDA/CuPy/Triton experiments, but only if the learning goal is sharper than “add GPU support”.
+
+### Dynamic/symbolic shapes
+
+Potential question:
+
+> How do guards, shape symbols, specialization and memory planning change when concrete shapes are no longer fixed?
+
+### DataLoader concurrency
+
+Potential question:
+
+> How should worker lifecycle, queues, ordering, prefetch and pinned host memory be separated from Dataset/Sampler semantics?
+
+### Real distributed transport
+
+Potential question:
+
+> Which DDP invariants survive once ProcessGroup collectives become multi-process/asynchronous/networked operations?
+
+### Allocator/runtime memory system
+
+Potential question:
+
+> How does a caching allocator change the distinction between logical Value lifetime, reusable compiler buffers and physical device allocation lifetime?
+
+### Higher-order autodiff / functional transforms
+
+Potential question:
+
+> What changes when backward itself must be differentiable and mutation/aliasing must be functionalized?
+
+These topics should stay in research-notes status unless one passes the future-roadmap gate.
+
+---
+
+# 7. Stable maintenance priorities
+
+Without a new roadmap, the preferred work order is:
+
+```text
+1. fix correctness bugs
+2. strengthen invariant tests
+3. improve architecture explanations
+4. reconcile stale historical documentation
+5. add measurement/benchmark evidence
+6. simplify confusing implementation without hiding mechanisms
+```
+
+Avoid feature-count growth for its own sake.
+
+---
+
+# 8. Documentation ownership after v1.0
+
+Canonical current-state docs:
+
+```text
+README.md                 entry point
+Agents.md                 engineering contract
+Plan.md                   roadmap / future-change gate
+docs/ARCHITECTURE_V1.md   full architecture ownership audit
+docs/LEARNING_PATH.md     recommended study sequence
+docs/PYTORCH_MAPPING.md   upstream concept-family mapping
+docs/ROADMAP.md           completed historical sequence
+```
+
+Historical branch docs remain version-specific snapshots.
+
+---
+
+# 9. Release/integration workflow for any justified future version
+
+```text
+validated main
+   ↓
+update Plan.md with new mental model
+   ↓
+create vX.Y from exact main HEAD
+   ↓
+write branch version.md + Agents.md first
+   ↓
+implement reference mechanism
+   ↓
+tests + docs + example
+   ↓
+exact release-candidate HEAD CI green
+   ↓
+freeze branch
+   ↓
+exact frozen HEAD CI green
+   ↓
+fast-forward into main
+   ↓
+restore canonical main docs
+   ↓
+exact main HEAD CI green
+```
+
+This workflow is itself part of the project's architecture discipline.
+
+---
+
+# 10. Current directive
+
+```text
+v0.1 → ... → v0.15 → v1.0  ✅ complete
+```
+
+The project is now in a stable integrated-learning state.
+
+Do not create `v1.1` until a new missing mental model has been explicitly identified, scoped and justified.

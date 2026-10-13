@@ -1,16 +1,15 @@
-# mini-pytorch v1.0 — Integrated Architecture
+# mini-pytorch v1.0 — Architecture-Driven PyTorch Learning Project
 
-> 用可运行、可测试的 Python / NumPy 代码，把一个 Tensor 表达式从 Storage、Dispatcher、Autograd 一路追踪到 Graph Compiler、AOT backward、Lowering、ExecutionPlan 与 PlannedExecutor。
+> 用可运行、可测试的 Python / NumPy 代码，把深度学习框架从 Tensor/Storage、Dispatcher、Autograd 一路拆到 DDP、Graph Compiler、AOT backward、Lowering 与 ExecutionPlan。
 
-**Release:** `1.0.0`  
-**Branch:** `v1.0`  
-**Status:** release candidate  
+**Latest integrated release:** `v1.0.0`  
+**Original learning sequence:** complete  
 **Validated baseline:** **251 / 251 tests passed**  
-**Integrated example:** CI validated
+**Integrated architecture example:** CI validated
 
-mini-pytorch 不是 PyTorch API clone，也不是性能复刻。它是一套按架构依赖逐版本构造的学习框架：每个版本只引入一个核心 mental model，v1.0 则把全部 0.x 机制收敛成一个可解释、可运行、可验证的整体。
+mini-pytorch 不追求 PyTorch API feature parity，也不复制上游源码。它的目标是把真实框架里的关键责任边界拆成一系列小而完整的机制，然后在 v1.0 中把这些机制重新串成一个整体。
 
-## 1. 完整版本学习地图
+## 1. 完整学习版本地图
 
 | Version | 核心主题 | 验证基线 |
 |---|---|---:|
@@ -30,6 +29,8 @@ mini-pytorch 不是 PyTorch API clone，也不是性能复刻。它是一套按�
 | `v0.14` | Lowering / Fusion / Inductor-like Concepts | 221 |
 | `v0.15` | Runtime / Performance Mechanics | 247 |
 | `v1.0` | Integrated Architecture | **251** |
+
+每个历史 branch 都保留其学习快照；`main` 始终代表最新集成、已验证的框架状态。
 
 ## 2. v1.0 完整架构
 
@@ -75,7 +76,7 @@ LoweredProgram
    ├── ExternalOp
    └── PointwiseFusion
    ↓
-profiling / lifetime analysis
+benchmark / profiling / lifetime analysis
    ↓
 MemoryPlan
    ↓
@@ -84,9 +85,9 @@ ExecutionPlan
 PlannedExecutor
 ```
 
-## 3. v1.0 做了什么
+## 3. v1.0 的核心工作不是“再加功能”
 
-v1.0 不增加新的大子系统，而是完成六件事：
+v0.1–v0.15 已完成原计划里的主要机制。v1.0 做的是：
 
 ```text
 architecture audit
@@ -95,65 +96,20 @@ public API / naming audit
       ↓
 cross-layer integration tests
       ↓
-one integrated executable example
+one end-to-end executable example
       ↓
-PyTorch concept mapping
+PyTorch subsystem concept mapping
       ↓
-documentation + release consistency
+documentation reconciliation
+      ↓
+release validation
 ```
 
-### 新增核心文档
+因此 v1.0 的价值在于回答：
 
-```text
-docs/ARCHITECTURE_V1.md
-    完整 ownership / dependency / failure-boundary 审计
+> 一个 Tensor 表达式，从内存布局、算子调度、反向传播、训练状态，到图捕获、AOT backward、lowering 和 runtime memory planning，分别由谁负责？这些层为什么不能混在一起？
 
-docs/API_AUDIT.md
-    公共 API 与命名审计
-
-docs/PYTORCH_MAPPING.md
-    mini-pytorch ↔ PyTorch subsystem concept map
-```
-
-### 新增跨层验证
-
-```text
-tests/test_v1_integration.py
-```
-
-覆盖：
-
-```text
-Tensor → Dispatcher → Backend → Autograd
-Module → Optimizer → Scheduler → Checkpoint restore
-Capture → Guards/Cache → AOT → Lowering → ExecutionPlan
-Planned forward/backward → eager output/gradient reference
-```
-
-### 新增最终集成示例
-
-```bash
-python examples/19_integrated_architecture.py
-```
-
-它明确分成：
-
-```text
-phase 1  eager training
-phase 2  checkpoint / runtime state restore
-phase 3  graph capture + guards/cache
-phase 4  eager gradient reference
-phase 5  AOT + lowering + planned runtime
-```
-
-CI 已验证该示例完整运行，并验证：
-
-```text
-planned output == eager output
-planned gradients == eager gradients
-```
-
-## 4. 三个最重要的架构区分
+## 4. 三个关键架构区分
 
 ### Tensor != Storage
 
@@ -165,7 +121,7 @@ Tensor
 = Storage reference + shape + stride + offset + autograd-facing state
 ```
 
-因此 transpose/view 可以共享 Storage，而 reshape/contiguous 在必要时可以分配新 Storage。
+这解释了 view / transpose / reshape / contiguous / in-place version safety 的不同语义。
 
 ### Dispatcher != kernel
 
@@ -177,7 +133,7 @@ Dispatcher policy
 backend kernel
 ```
 
-Autograd、NoGrad、backend 选择、redispatch 是调度层责任，不属于单个 CPU 数值 kernel。
+Autograd、NoGrad、backend selection、redispatch 属于调度层，不属于单个数值 kernel。
 
 ### Graph != LoweredProgram != ExecutionPlan
 
@@ -186,17 +142,17 @@ Graph
 = logical dataflow
 
 LoweredProgram
-= compiler 决定“执行什么”
+= compiler 决定 what executes
 
 ExecutionPlan
-= runtime 决定“临时资源怎样分配”
+= runtime 决定 how temporary resources are assigned
 ```
 
-这是从 eager framework 进入 compiler/runtime 架构时最关键的分层。
+这个区分把 compiler transform 与 runtime resource planning 明确分开。
 
 ## 5. Correctness stack
 
-mini-pytorch 刻意保留旧层作为新层的 reference：
+框架保留旧执行层作为新执行层的独立 reference：
 
 ```text
 Eager Tensor execution
@@ -215,70 +171,140 @@ eager AutogradEngine gradients
       ==
 explicit AOT backward Graph gradients
       ==
-lowered backward gradients
-      ==
-planned backward gradients
+lowered/planned backward gradients
 ```
 
-优化层不会因为“更高级”就取代 reference layer。
+新的优化层不替代 correctness oracle。
 
-## 6. v1.0 release consistency
+## 6. v1.0 新增的集成资产
 
-v1.0 把版本信息收敛到：
+### 完整架构审计
+
+```text
+docs/ARCHITECTURE_V1.md
+```
+
+逐层记录：
+
+```text
+owner / responsibility
+inputs / outputs
+allowed dependencies
+forbidden dependencies
+invariants
+failure boundary
+educational simplifications
+```
+
+### API 审计
+
+```text
+docs/API_AUDIT.md
+```
+
+结论是保留低层学习型 API，不为了表面模仿 PyTorch 做 breaking rewrite。
+
+### PyTorch 概念映射
+
+```text
+docs/PYTORCH_MAPPING.md
+```
+
+使用：
+
+```text
+mini-pytorch concept
+      ↕ responsibility analogy
+real PyTorch subsystem family
+```
+
+明确不声明 source/API/performance parity。
+
+### 跨层集成测试
+
+```text
+tests/test_v1_integration.py
+```
+
+验证：
+
+```text
+Tensor → Dispatcher → Backend → Autograd
+Module → Optimizer → Scheduler → Checkpoint restore
+Capture → Guard/Cache → AOT → Lowering → ExecutionPlan
+Planned backward → eager gradient reference
+```
+
+### 最终集成示例
+
+```bash
+python examples/19_integrated_architecture.py
+```
+
+分成真实的不同阶段：
+
+```text
+1. eager training
+2. runtime/checkpoint restore
+3. graph cache specialization
+4. eager gradient reference
+5. AOT + lowering + planned runtime
+```
+
+DDP 不被强行塞进 compiler subgraph；它仍是 sibling training-synchronization concern。
+
+## 7. Release metadata 统一
+
+v1.0 引入：
 
 ```text
 mini_pytorch/_version.py
-__version__ = "1.0.0"
 ```
 
-并让：
+作为运行时代码的单一版本源：
 
 ```text
-mini_pytorch.__version__
-checkpoint framework_version
-pyproject package version
+mini_pytorch.__version__ = 1.0.0
+checkpoint framework_version = 1.0.0
+pyproject package version = 1.0.0
 ```
 
-保持一致。
+同时 CI 从只匹配 `v0.*` 改为匹配 `v*`，所以 v1.0 与未来明确创建的版本分支都可以获得 exact-head 验证。
 
-GitHub Actions 也从只监听 `v0.*` 扩展为：
+## 8. v1.0 验证
+
+Frozen v1.0 branch HEAD：
 
 ```text
-main
-v*
+7f6ef6ebb5357d7b15954e780455976fbff3f6b3
 ```
 
-因此 v1.0 能获得真正的 exact-head CI。
-
-## 7. 当前验证结果
-
-release-candidate framework state：
-
-```text
-commit d49b1872274f790303d719034074b75c270a18c2
-```
-
-GitHub Actions 环境：
+通过 GitHub Actions：
 
 ```text
 Ubuntu 24.04
 Python 3.11.17
 NumPy 2.4.6
+mini-pytorch-learning 1.0.0
+```
+
+Release gate：
+
+```bash
+python -m unittest discover -s tests -v
+python examples/19_integrated_architecture.py
 ```
 
 结果：
 
 ```text
-Ran 251 tests
-OK
-
-examples/19_integrated_architecture.py
-PASS
+251 tests / OK
+integrated architecture example / PASS
 ```
 
-## 8. 推荐阅读路径
+## 9. 推荐阅读路径
 
-如果想从底层一路读完：
+完整底层路径：
 
 ```text
 device.py / backend.py
@@ -304,7 +330,7 @@ analysis.py / lowering.py
 runtime_analysis.py / execution_plan.py
 ```
 
-配合：
+配套阅读：
 
 ```text
 docs/LEARNING_PATH.md
@@ -312,7 +338,7 @@ docs/ARCHITECTURE_V1.md
 docs/PYTORCH_MAPPING.md
 ```
 
-## 9. Quick validation
+## 10. Quick start
 
 ```bash
 python -m pip install -e .
@@ -320,61 +346,31 @@ python -m unittest discover -s tests -v
 python examples/19_integrated_architecture.py
 ```
 
-## 10. PyTorch mapping 的正确用法
-
-`docs/PYTORCH_MAPPING.md` 使用的是：
+也可以按历史版本逐层学习：
 
 ```text
-mini-pytorch educational concept
-      ↕ conceptual responsibility
-real PyTorch subsystem family
+v0.1 → v0.2 → ... → v0.15 → v1.0
 ```
-
-而不是：
-
-```text
-同名类
-=
-同一份实现
-```
-
-例如：
-
-```text
-mini Dispatcher         ↔ PyTorch dispatcher concept family
-mini AOT differentiation ↔ AOTDispatcher/AOTAutograd concept family
-mini lowering/fusion     ↔ Inductor-like compiler concepts
-ExecutionPlan            ↔ general compiler/runtime memory-planning ideas
-```
-
-项目明确不声明源码、API、性能或 edge-case parity。
 
 ## 11. Explicit non-goals
 
 v1.0 不包括：
 
-- real CUDA/Triton kernel/codegen；
+- real CUDA/Triton kernels/codegen；
 - symbolic dynamic-shape compiler；
-- production multiprocessing/prefetch DataLoader；
+- production multiprocessing/prefetch/pinned-memory DataLoader；
 - NCCL/network DDP；
 - production caching allocator；
 - whole-Python bytecode compiler；
 - complete higher-order autodiff；
-- PyTorch feature parity；
-- 性能营销式 benchmark 结论。
+- PyTorch API/source/performance parity；
+- benchmark marketing claims。
 
-这些不是 v1.0 “没做完”，而是本项目原始学习目标之外的边界。
+这些是明确边界，而不是隐藏的 v1.0 完成条件。
 
-## 12. Historical branches
+## 12. Historical branch rule
 
-每个版本 branch 都是一个学习快照：
-
-```text
-v0.1 ... v0.15
-v1.0
-```
-
-阅读历史版本时先看：
+历史版本是学习快照。阅读某个版本时先看：
 
 ```text
 Agents.md
@@ -382,12 +378,22 @@ version.md
 README.md
 ```
 
-冻结版本不作为未来开发基线；未来若要继续扩展，必须从最新 `main` 开始，并先定义新的 mental model 和独立 roadmap。
+冻结 branch 只接受历史边界内的文档修正、澄清测试或窄范围 bugfix。
 
-## 13. v1.0 的完成标准
+未来开发必须从最新 `main` 开始。
 
-v1.0 的最终目标不是“多一个功能”，而是让读者可以回答：
+## 13. After v1.0
 
-> 一个 Tensor 表达式，从内存布局、算子调度、反向传播、训练状态，到图捕获、AOT backward、lowering、runtime memory planning，分别由谁负责？为什么必须这样分层？
+**没有自动的 `v1.1` feature queue。**
 
-`docs/ARCHITECTURE_V1.md` 和 `examples/19_integrated_architecture.py` 是回答这个问题的两个入口：一个负责完整解释，一个负责可执行证明。
+如果继续项目，第一步不是创建下一分支，而是回答：
+
+```text
+缺少的 mental model 是什么？
+为什么 v1.0 现有架构不能解释它？
+它应该由哪一层负责？
+最小可读实现是什么？
+明确的 non-goals 是什么？
+```
+
+只有这些问题形成新的独立 roadmap 后，才应该创建后续版本。
