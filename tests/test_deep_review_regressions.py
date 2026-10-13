@@ -104,6 +104,20 @@ class TestOperatorEdgeHardening(unittest.TestCase):
             scalar.transpose(0, 0)
 
 
+class TestLeafSemanticsHardening(unittest.TestCase):
+    def test_leaf_property_tracks_graph_provenance_not_requires_grad(self):
+        constant = Tensor([1.0, 2.0])
+        parameter_like = Tensor([1.0, 2.0], requires_grad=True)
+        nonleaf = parameter_like * 2.0
+        detached = nonleaf.detach()
+
+        self.assertTrue(constant.is_leaf)
+        self.assertTrue(parameter_like.is_leaf)
+        self.assertFalse(nonleaf.is_leaf)
+        self.assertTrue(detached.is_leaf)
+        self.assertFalse(detached.requires_grad)
+
+
 class TestSchedulerStateHardening(unittest.TestCase):
     def test_step_lr_restore_recovers_saved_configuration_and_future_trajectory(self):
         source_p = nn.Parameter(np.array([1.0]))
