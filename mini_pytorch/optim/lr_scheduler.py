@@ -47,14 +47,60 @@ class LRScheduler:
     def get_last_lr(self) -> List[float]:
         return list(self._last_lr)
 
+    def _config_state(self) -> dict:
+        """Serializable subclass configuration needed for deterministic resume."""
+        return {}
+
+    def _load_config_state(self, config: dict) -> None:
+        if config:
+            raise ValueError(
+                f"unexpected scheduler config for {type(self).__name__}: {sorted(config)}"
+            )
+
     def state_dict(self) -> dict:
-        return {"base_lrs": list(self.base_lrs), "last_epoch": self.last_epoch, "_step_count": self._step_count, "_last_lr": list(self._last_lr)}
+        return {
+            "scheduler_type": type(self).__name__,
+            "config": deepcopy(self._config_state()),
+            "base_lrs": list(self.base_lrs),
+            "last_epoch": self.last_epoch,
+            "_step_count": self._step_count,
+            "_last_lr": list(self._last_lr),
+        }
 
     def load_state_dict(self, state_dict: dict) -> None:
-        self.base_lrs = list(state_dict["base_lrs"])
+        if not isinstance(state_dict, dict):
+            raise TypeError("scheduler state_dict must be a dictionary")
+
+        saved_type = state_dict.get("scheduler_type")
+        if saved_type is not None and saved_type != type(self).__name__:
+            raise ValueError(
+                f"scheduler type mismatch: checkpoint has {saved_type!r}, "
+                f"target is {type(self).__name__!r}"
+            )
+
+        # Backward compatibility: pre-hardening states do not contain config.
+        if "config" in state_dict:
+            config = state_dict["config"]
+            if not isinstance(config, dict):
+                raise TypeError("scheduler config must be a dictionary")
+            self._load_config_state(deepcopy(config))
+
+        group_count = len(self.optimizer.param_groups)
+        base_lrs = [float(v) for v in state_dict["base_lrs"]]
+        last_lrs = [float(v) for v in state_dict.get("_last_lr", self._last_lr)]
+        if len(base_lrs) != group_count:
+            raise ValueError(
+                f"scheduler base_lrs has {len(base_lrs)} values for {group_count} optimizer groups"
+            )
+        if len(last_lrs) != group_count:
+            raise ValueError(
+                f"scheduler _last_lr has {len(last_lrs)} values for {group_count} optimizer groups"
+            )
+
+        self.base_lrs = base_lrs
         self.last_epoch = int(state_dict["last_epoch"])
         self._step_count = int(state_dict.get("_step_count", 0))
-        self._last_lr = list(state_dict.get("_last_lr", self._last_lr))
+        self._last_lr = last_lrs
         for group, lr in zip(self.optimizer.param_groups, self._last_lr):
             group["lr"] = float(lr)
 
@@ -74,6 +120,20 @@ class LambdaLR(LRScheduler):
     def get_lr(self) -> List[float]:
         return [base_lr * fn(self.last_epoch) for base_lr, fn in zip(self.base_lrs, self.lr_lambdas)]
 
+    def _config_state(self) -> dict:
+        # Callable bodies are intentionally not serialized by mini-pytorch's
+        # transparent JSON/NPZ checkpoint format. Preserve and validate only
+        # their structural arity; callers must reconstruct equivalent callables.
+        return {"num_lr_lambdas": len(self.lr_lambdas)}
+
+    def _load_config_state(self, config: dict) -> None:
+        expected = int(config.get("num_lr_lambdas", len(self.lr_lambdas)))
+        if expected != len(self.lr_lambdas):
+            raise ValueError(
+                f"LambdaLR checkpoint expects {expected} callables, "
+                f"target has {len(self.lr_lambdas)}"
+            )
+
 
 class StepLR(LRScheduler):
     def __init__(self, optimizer: Optimizer, step_size: int, gamma: float = 0.1, last_epoch: int = -1) -> None:
@@ -87,6 +147,18 @@ class StepLR(LRScheduler):
     def get_lr(self) -> List[float]:
         factor = self.gamma ** (self.last_epoch // self.step_size)
         return [base_lr * factor for base_lr in self.base_lrs]
+
+    def _config_state(self) -> dict:
+        return {"step_size": self.step_size, "gamma": self.gamma}
+
+    def _load_config_state(self, config: dict) -> None:
+        step_size = int(config["step_size"])
+        gamma = float(config["gamma"])
+        if step_size <= 0:
+            raise ValueError("step_size must be positive")
+        if gamma < 0:
+            raise ValueError("gamma must be non-negative")
+        self.step_size, self.gamma = step_size, gamma
 
 
 class MultiStepLR(LRScheduler):
@@ -102,6 +174,18 @@ class MultiStepLR(LRScheduler):
     def get_lr(self) -> List[float]:
         return [base_lr * self.gamma ** bisect.bisect_right(self.milestones, self.last_epoch) for base_lr in self.base_lrs]
 
+    def _config_state(self) -> dict:
+        return {"milestones": list(self.milestones), "gamma": self.gamma}
+
+    def _load_config_state(self, config: dict) -> None:
+        milestones = sorted(int(m) for m in config["milestones"])
+        gamma = float(config["gamma"])
+        if any(m < 0 for m in milestones):
+            raise ValueError("milestones must be non-negative")
+        if gamma < 0:
+            raise ValueError("gamma must be non-negative")
+        self.milestones, self.gamma = milestones, gamma
+
 
 class ExponentialLR(LRScheduler):
     def __init__(self, optimizer: Optimizer, gamma: float, last_epoch: int = -1) -> None:
@@ -112,6 +196,15 @@ class ExponentialLR(LRScheduler):
 
     def get_lr(self) -> List[float]:
         return [base_lr * self.gamma**self.last_epoch for base_lr in self.base_lrs]
+
+    def _config_state(self) -> dict:
+        return {"gamma": self.gamma}
+
+    def _load_config_state(self, config: dict) -> None:
+        gamma = float(config["gamma"])
+        if gamma < 0:
+            raise ValueError("gamma must be non-negative")
+        self.gamma = gamma
 
 
 class CosineAnnealingLR(LRScheduler):
@@ -127,6 +220,18 @@ class CosineAnnealingLR(LRScheduler):
         cosine = (1.0 + math.cos(math.pi * self.last_epoch / self.T_max)) / 2.0
         return [self.eta_min + (base_lr - self.eta_min) * cosine for base_lr in self.base_lrs]
 
+    def _config_state(self) -> dict:
+        return {"T_max": self.T_max, "eta_min": self.eta_min}
+
+    def _load_config_state(self, config: dict) -> None:
+        T_max = int(config["T_max"])
+        eta_min = float(config["eta_min"])
+        if T_max <= 0:
+            raise ValueError("T_max must be positive")
+        if eta_min < 0:
+            raise ValueError("eta_min must be non-negative")
+        self.T_max, self.eta_min = T_max, eta_min
+
 
 class LinearLR(LRScheduler):
     def __init__(self, optimizer: Optimizer, start_factor: float = 1.0 / 3.0, end_factor: float = 1.0, total_iters: int = 5, last_epoch: int = -1) -> None:
@@ -141,6 +246,27 @@ class LinearLR(LRScheduler):
         progress = min(max(self.last_epoch, 0), self.total_iters) / self.total_iters
         factor = self.start_factor + progress * (self.end_factor - self.start_factor)
         return [base_lr * factor for base_lr in self.base_lrs]
+
+    def _config_state(self) -> dict:
+        return {
+            "start_factor": self.start_factor,
+            "end_factor": self.end_factor,
+            "total_iters": self.total_iters,
+        }
+
+    def _load_config_state(self, config: dict) -> None:
+        start_factor = float(config["start_factor"])
+        end_factor = float(config["end_factor"])
+        total_iters = int(config["total_iters"])
+        if not 0 <= start_factor <= 1 or not 0 <= end_factor <= 1:
+            raise ValueError("start_factor and end_factor must be in [0, 1]")
+        if total_iters <= 0:
+            raise ValueError("total_iters must be positive")
+        self.start_factor, self.end_factor, self.total_iters = (
+            start_factor,
+            end_factor,
+            total_iters,
+        )
 
 
 class ReduceLROnPlateau:
@@ -202,10 +328,57 @@ class ReduceLROnPlateau:
         return list(self._last_lr)
 
     def state_dict(self) -> dict:
-        return {"mode": self.mode, "factor": self.factor, "patience": self.patience, "threshold": self.threshold, "threshold_mode": self.threshold_mode, "cooldown": self.cooldown, "cooldown_counter": self.cooldown_counter, "min_lrs": list(self.min_lrs), "eps": self.eps, "last_epoch": self.last_epoch, "num_bad_epochs": self.num_bad_epochs, "best": self.best, "_last_lr": list(self._last_lr)}
+        return {
+            "scheduler_type": type(self).__name__,
+            "mode": self.mode,
+            "factor": self.factor,
+            "patience": self.patience,
+            "threshold": self.threshold,
+            "threshold_mode": self.threshold_mode,
+            "cooldown": self.cooldown,
+            "cooldown_counter": self.cooldown_counter,
+            "min_lrs": list(self.min_lrs),
+            "eps": self.eps,
+            "last_epoch": self.last_epoch,
+            "num_bad_epochs": self.num_bad_epochs,
+            "best": self.best,
+            "_last_lr": list(self._last_lr),
+        }
 
     def load_state_dict(self, state_dict: dict) -> None:
-        for key, value in deepcopy(state_dict).items():
-            setattr(self, key, value)
+        if not isinstance(state_dict, dict):
+            raise TypeError("scheduler state_dict must be a dictionary")
+        saved_type = state_dict.get("scheduler_type")
+        if saved_type is not None and saved_type != type(self).__name__:
+            raise ValueError(
+                f"scheduler type mismatch: checkpoint has {saved_type!r}, "
+                f"target is {type(self).__name__!r}"
+            )
+
+        group_count = len(self.optimizer.param_groups)
+        min_lrs = [float(v) for v in state_dict["min_lrs"]]
+        last_lrs = [float(v) for v in state_dict["_last_lr"]]
+        if len(min_lrs) != group_count:
+            raise ValueError(
+                f"scheduler min_lrs has {len(min_lrs)} values for {group_count} optimizer groups"
+            )
+        if len(last_lrs) != group_count:
+            raise ValueError(
+                f"scheduler _last_lr has {len(last_lrs)} values for {group_count} optimizer groups"
+            )
+
+        self.mode = state_dict["mode"]
+        self.factor = float(state_dict["factor"])
+        self.patience = int(state_dict["patience"])
+        self.threshold = float(state_dict["threshold"])
+        self.threshold_mode = state_dict["threshold_mode"]
+        self.cooldown = int(state_dict["cooldown"])
+        self.cooldown_counter = int(state_dict["cooldown_counter"])
+        self.min_lrs = min_lrs
+        self.eps = float(state_dict["eps"])
+        self.last_epoch = int(state_dict["last_epoch"])
+        self.num_bad_epochs = int(state_dict["num_bad_epochs"])
+        self.best = float(state_dict["best"])
+        self._last_lr = last_lrs
         for group, lr in zip(self.optimizer.param_groups, self._last_lr):
             group["lr"] = float(lr)
