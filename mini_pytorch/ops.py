@@ -17,6 +17,31 @@ def unbroadcast(grad: np.ndarray, target_shape: tuple[int, ...]) -> np.ndarray:
     return grad.reshape(target_shape)
 
 
+def _numpy_root(array: np.ndarray) -> np.ndarray:
+    """Return the deepest ndarray base for structural view checks.
+
+    NumPy reports ``shares_memory=False`` for zero-element arrays because no
+    bytes overlap. Empty tensors still have meaningful view/layout ownership, so
+    ``View`` uses a common ndarray root as the zero-size aliasing proof.
+    """
+
+    current = array
+    seen: set[int] = set()
+    while isinstance(current.base, np.ndarray):
+        identity = id(current)
+        if identity in seen:
+            break
+        seen.add(identity)
+        current = current.base
+    return current
+
+
+def _is_numpy_view_of(out: np.ndarray, source: np.ndarray) -> bool:
+    if np.shares_memory(out, source):
+        return True
+    return out.size == 0 and source.size == 0 and _numpy_root(out) is _numpy_root(source)
+
+
 class Add(Function):
     @staticmethod
     def setup_context(ctx: Context, a, b):
@@ -176,7 +201,7 @@ class View(Function):
     def forward(ctx: Context, a, *, shape: tuple[int, ...]):
         ctx.input_shape = a.shape
         out = a.reshape(shape)
-        if not np.shares_memory(out, a):
+        if not _is_numpy_view_of(out, a):
             raise RuntimeError(
                 "view size is not compatible with the tensor's size and stride; "
                 "use reshape() to allow a copy"
