@@ -1,110 +1,136 @@
-# Agents.md — mini-pytorch v0.12 Development Contract
+# Agents.md — mini-pytorch v0.12 Frozen Branch Contract
 
-> Read before modifying branch `v0.12`.
+> Read this file before modifying frozen branch `v0.12`.
 
 ## Branch identity
 
 - Branch: `v0.12`
 - Previous: `v0.11`
 - Theme: Guards / Graph Cache / Recompile
-- Status: active until exact final-head CI passes
+- Status: **frozen historical learning snapshot**
+- Package: `0.12.0`
+- Validated baseline: **192/192 tests passed**
 
-## Mandatory reading order
+## Historical promise
 
-1. `Agents.md`
-2. `version.md`
-3. `docs/GRAPH_IR.md`
-4. `tests/test_graph_ir.py`
-5. `mini_pytorch/compiler/*`
-6. relevant Dispatcher/Autograd tests
-
-## Allowed scope
-
-v0.12 may add:
+v0.12 exists to teach:
 
 ```text
-TensorSignature
-InputSignature
-Guard / GuardResult
-GuardSet
-GraphCacheEntry
+Graph IR
+   ↓
+runtime InputSignature
+   ↓
+inspectable GuardSet
+   ↓
 GraphCache
-CompiledFunction
-compile_graph(fn)
-cache/recompile statistics
-explain surface
-v0.12 tests/docs/example
+ ┌────┴────┐
+ HIT       MISS
+  │          │
+ replay    capture
 ```
 
-## Required architecture
+One callable may own multiple guarded Graph specializations.
+
+## Frozen specialization model
+
+The v0.12 contract guards exactly:
 
 ```text
-runtime call
-    ↓
-InputSignature
-    ↓
-GuardSet
-    ↓
-GraphCache
- ┌──────┴──────┐
- ▼             ▼
-hit           miss
- │              │
-GraphInterpreter capture
- │              ↓
- │          new entry
- └──────────────┘
+input count
+shape
+dtype
+device
+requires_grad
+grad mode
 ```
 
-Rules:
+A guard failure is a normal cache miss and may create another specialization.
 
-- guard logic stays outside numerical kernels;
-- Graph IR stays logical and does not store DispatchKey decisions;
-- cache hit replays with `GraphInterpreter` through normal Dispatcher;
-- cache miss captures a new Graph; do not mutate an incompatible Graph;
-- guard failures are normal cache-miss information, not exceptional control flow;
-- cache decisions and failure reasons must be inspectable;
-- exact specialization fields for v0.12: input count, shape, dtype, device, requires_grad, grad mode;
-- no symbolic-shape claims;
-- v0.11 GraphBreak semantics remain explicit;
-- closure Tensor constants remain capture-by-value snapshots in this version.
+Do not retrofit symbolic shapes or production Dynamo semantics into this branch.
 
-## GraphBreak policy
+## Frozen compiler invariants
 
-If capture fails with `GraphBreakError`:
+- capture remains at outer `Dispatcher.dispatch` logical-op level;
+- redispatch/backend execution is not duplicated into IR nodes;
+- GraphInterpreter replays through Dispatcher;
+- cache hits never call backend kernels directly;
+- incompatible entries are not mutated into new shapes/devices;
+- new specializations append separate cache entries;
+- guard decisions remain inspectable;
+- `explain()` must not mutate cache statistics;
+- v0.11 GraphBreak behavior remains explicit;
+- GraphBreak installs no cache entry;
+- closure Tensor constants remain capture-by-value snapshots;
+- CPU and EDU remain real distinct device identities even though both use NumPy-hosted educational storage.
+
+## Allowed future changes on this frozen branch
+
+Only:
+
+- documentation corrections;
+- tests clarifying already-promised v0.12 behavior;
+- narrowly scoped bug fixes that preserve v0.12 semantics.
+
+Do not backport:
+
+- AOTAutograd-like graph differentiation;
+- symbolic shapes;
+- Python frame interception;
+- lowering/fusion;
+- generated kernels;
+- future compiler runtime features.
+
+## Required regression command
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Historical validated result:
 
 ```text
-no cache entry is installed
-successful compile_count does not increase
-graph_break_count increases
-error propagates to caller
+Ran 192 tests
+OK
 ```
 
-Do not automatically re-run the Python function after a failed trace because that could duplicate side effects.
+## Key files
 
-## Historical invariants
+```text
+mini_pytorch/compiler/signature.py
+mini_pytorch/compiler/guards.py
+mini_pytorch/compiler/cache.py
+mini_pytorch/compiler/compiled.py
+mini_pytorch/compiler/capture.py
+mini_pytorch/compiler/interpreter.py
+mini_pytorch/compiler/ir.py
 
-All earlier tests must remain green, especially:
+tests/test_graph_cache.py
+tests/test_graph_ir.py
+docs/GRAPH_CACHE.md
+docs/GRAPH_IR.md
+examples/15_graph_cache.py
+```
 
-- v0.4 Storage/view/version safety;
-- v0.5 Dispatcher/redispatch;
-- v0.7 device/backend routing;
-- v0.8 Autograd Engine;
-- v0.9 deterministic resume;
-- v0.10 DDP equivalence;
-- v0.11 eager-vs-Graph replay forward/backward equivalence.
+## Reading order
 
-## Definition of Done
+```text
+version.md
+   ↓
+signature.py
+   ↓
+guards.py
+   ↓
+cache.py
+   ↓
+compiled.py
+   ↓
+test_graph_cache.py
+   ↓
+GRAPH_CACHE.md
+```
 
-Before freezing v0.12:
+## Next-version boundary
 
-- full regression green;
-- multi-specialization cache proof green;
-- grad-mode specialization tested;
-- CPU/EDU specialization tested;
-- eager/compiled output and gradient equivalence tested;
-- explain/stats tested;
-- GraphBreak/cache interaction tested;
-- README/version/docs/example/manifest updated;
-- exact final branch-head GitHub Actions green;
-- then freeze branch and integrate validated tree into main.
+The next architectural problem belongs in `v0.13`, created from latest `main` after v0.12 integration:
+
+> Once a guarded forward Graph exists, how can backward computation itself become an explicit graph representation suitable for ahead-of-time transformation?
