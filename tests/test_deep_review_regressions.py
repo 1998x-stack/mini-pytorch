@@ -1,3 +1,4 @@
+import json
 import unittest
 
 import numpy as np
@@ -101,6 +102,67 @@ class TestOperatorEdgeHardening(unittest.TestCase):
         scalar = Tensor(1.0)
         with self.assertRaisesRegex(IndexError, "at least one dimension"):
             scalar.transpose(0, 0)
+
+
+class TestSchedulerStateHardening(unittest.TestCase):
+    def test_step_lr_restore_recovers_saved_configuration_and_future_trajectory(self):
+        source_p = nn.Parameter(np.array([1.0]))
+        source_opt = optim.SGD([source_p], lr=0.2)
+        source = optim.StepLR(source_opt, step_size=2, gamma=0.5)
+        source.step()
+        source.step()
+        state = source.state_dict()
+
+        target_p = nn.Parameter(np.array([1.0]))
+        target_opt = optim.SGD([target_p], lr=0.9)
+        target = optim.StepLR(target_opt, step_size=9, gamma=0.9)
+        target.load_state_dict(state)
+
+        self.assertEqual(target.step_size, 2)
+        self.assertEqual(target.gamma, 0.5)
+        self.assertEqual(target.get_last_lr(), source.get_last_lr())
+        for _ in range(6):
+            source.step()
+            target.step()
+            np.testing.assert_allclose(target.get_last_lr(), source.get_last_lr())
+
+    def test_scheduler_type_mismatch_fails_explicitly(self):
+        p = nn.Parameter(np.array([1.0]))
+        source_opt = optim.SGD([p], lr=0.1)
+        state = optim.StepLR(source_opt, step_size=2, gamma=0.5).state_dict()
+
+        q = nn.Parameter(np.array([1.0]))
+        target_opt = optim.SGD([q], lr=0.1)
+        target = optim.ExponentialLR(target_opt, gamma=0.9)
+        with self.assertRaisesRegex(ValueError, "scheduler type mismatch"):
+            target.load_state_dict(state)
+
+    def test_scheduler_group_count_mismatch_fails_instead_of_zip_truncation(self):
+        p = nn.Parameter(np.array([1.0]))
+        source_opt = optim.SGD([p], lr=0.1)
+        state = optim.StepLR(source_opt, step_size=2).state_dict()
+
+        a = nn.Parameter(np.array([1.0]))
+        b = nn.Parameter(np.array([2.0]))
+        target_opt = optim.SGD(
+            [
+                {"params": [a], "lr": 0.1},
+                {"params": [b], "lr": 0.2},
+            ],
+            lr=0.1,
+        )
+        target = optim.StepLR(target_opt, step_size=2)
+        with self.assertRaisesRegex(ValueError, "optimizer groups"):
+            target.load_state_dict(state)
+
+    def test_lambda_lr_state_remains_transparently_serializable(self):
+        p = nn.Parameter(np.array([1.0]))
+        optimizer = optim.SGD([p], lr=0.1)
+        scheduler = optim.LambdaLR(optimizer, lambda epoch: 1.0 / (epoch + 1.0))
+        state = scheduler.state_dict()
+        self.assertEqual(state["config"], {"num_lr_lambdas": 1})
+        encoded = json.dumps(state)
+        self.assertIsInstance(encoded, str)
 
 
 class TestProcessGroupLifetimeHardening(unittest.TestCase):
