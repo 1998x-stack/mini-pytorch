@@ -13,6 +13,7 @@ docs/DEVICE_BACKEND.md
 docs/DISPATCHER.md
 docs/DISTRIBUTED_DDP.md
 docs/EXTENDING.md
+docs/GRAPH_IR.md
 docs/LEARNING_PATH.md
 docs/MNIST_TRAINING.md
 docs/OPTIMIZERS_AND_SCHEDULERS.md
@@ -32,6 +33,7 @@ examples/10_device_backend.py
 examples/11_autograd_engine.py
 examples/12_checkpoint_resume.py
 examples/13_ddp_simulation.py
+examples/14_graph_capture.py
 mini_pytorch/__init__.py
 mini_pytorch/autograd.py
 mini_pytorch/autograd_engine.py
@@ -47,6 +49,10 @@ mini_pytorch/ops.py
 mini_pytorch/storage.py
 mini_pytorch/tensor.py
 mini_pytorch/utils.py
+mini_pytorch/compiler/__init__.py
+mini_pytorch/compiler/capture.py
+mini_pytorch/compiler/interpreter.py
+mini_pytorch/compiler/ir.py
 mini_pytorch/data/__init__.py
 mini_pytorch/data/dataloader.py
 mini_pytorch/data/dataset.py
@@ -88,6 +94,7 @@ tests/test_data.py
 tests/test_device_backend.py
 tests/test_dispatcher.py
 tests/test_distributed.py
+tests/test_graph_ir.py
 tests/test_lr_scheduler.py
 tests/test_mnist.py
 tests/test_nn.py
