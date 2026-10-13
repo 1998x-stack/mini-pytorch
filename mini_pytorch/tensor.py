@@ -45,6 +45,27 @@ def _normalize_shape(shape: tuple[int, ...], numel: int) -> tuple[int, ...]:
     return tuple(dims)
 
 
+def _references_numpy_base(array: np.ndarray, base: np.ndarray) -> bool:
+    """Return whether ``array``'s NumPy base chain reaches ``base``.
+
+    ``np.shares_memory`` deliberately reports False for zero-element arrays,
+    because there are no bytes to overlap. Layout/view ownership still matters
+    for Tensor semantics, so empty metadata views need a structural alias check.
+    """
+
+    current = array
+    seen: set[int] = set()
+    while isinstance(current, np.ndarray):
+        if current is base:
+            return True
+        identity = id(current)
+        if identity in seen:
+            break
+        seen.add(identity)
+        current = current.base
+    return False
+
+
 class _ToDevice:
     """Autograd identity node used for educational device copies."""
 
@@ -134,7 +155,10 @@ class Tensor:
                 continue
             if array.dtype != source.data.dtype:
                 continue
-            if not np.shares_memory(array, source.data):
+            aliases_storage = np.shares_memory(array, source.data) or _references_numpy_base(
+                array, source._storage._array
+            )
+            if not aliases_storage:
                 continue
             itemsize = int(array.dtype.itemsize)
             base_ptr = int(source._storage._array.__array_interface__["data"][0])
@@ -159,8 +183,6 @@ class Tensor:
         )
 
     def _make_numpy_view(self) -> np.ndarray:
-        if any(dim == 0 for dim in self._shape):
-            return np.empty(self._shape, dtype=self._storage.dtype)
         itemsize = int(self._storage.dtype.itemsize)
         return np.ndarray(
             shape=self._shape,
