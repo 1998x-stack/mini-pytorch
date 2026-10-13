@@ -1,11 +1,11 @@
-"""Builtin operator schemas and backend registrations for mini-pytorch v0.7."""
+"""Builtin operator schemas and backend registrations for mini-pytorch."""
 from __future__ import annotations
 
 import numpy as np
 
 from .autograd import Context, GradFn
 from .dispatcher import DispatchKey, DispatchKeySet, Library, dispatcher
-from . import kernels
+from . import aot_kernels, kernels
 from .nn_ops import Conv2dOp, MaxPool2dOp
 from .ops import Add, MatMul, Mul, ReLU, Sum
 from .tensor import Tensor
@@ -22,9 +22,8 @@ def _tensor_result(array, *inputs: Tensor) -> Tensor:
     )
 
 
-# CPU and EDU intentionally share these NumPy numerical implementations in
-# v0.7. They are registered under distinct DispatchKeys, so routing remains
-# backend-specific while the educational second backend stays hardware-free.
+# CPU and EDU intentionally share NumPy numerical implementations. They are
+# still registered under distinct DispatchKeys so backend routing is explicit.
 def _backend_add(a: Tensor, b: Tensor) -> Tensor:
     return _tensor_result(kernels.add(a.data, b.data), a, b)
 
@@ -91,6 +90,33 @@ def _backend_max_pool2d(input: Tensor, *, kernel_size, stride=None, padding=0) -
         ),
         input,
     )
+
+
+# v0.13 AOT helper operators. These are first-order backend kernels. They are
+# intentionally executed under no_grad by AOTProgram.backward; no higher-order
+# Autograd support is claimed.
+def _backend_aot_unbroadcast(grad: Tensor, *, shape) -> Tensor:
+    return _tensor_result(aot_kernels.unbroadcast(grad.data, shape), grad)
+
+
+def _backend_aot_sum_backward(grad: Tensor, *, input_shape, axis=None, keepdims=False) -> Tensor:
+    return _tensor_result(
+        aot_kernels.sum_backward(
+            grad.data,
+            input_shape,
+            axis=axis,
+            keepdims=keepdims,
+        ),
+        grad,
+    )
+
+
+def _backend_aot_transpose2d(input: Tensor) -> Tensor:
+    return _tensor_result(aot_kernels.transpose2d(input.data), input)
+
+
+def _backend_aot_relu_backward(grad: Tensor, input: Tensor) -> Tensor:
+    return _tensor_result(aot_kernels.relu_backward(grad.data, input.data), grad, input)
 
 
 def _attach_autograd(operator: str, function_cls, *inputs: Tensor, **kwargs) -> Tensor:
@@ -227,6 +253,31 @@ def register_builtin_operators() -> None:
     ):
         _register_backend_pair(operator, backend_kernel)
         dispatcher.register(operator, DispatchKey.AUTOGRAD, autograd_kernel)
+
+    aot_lib = Library("aot", dispatcher)
+    aot_schemas = {
+        "aot::unbroadcast.default": aot_lib.define(
+            "unbroadcast", signature="(Tensor grad, shape) -> Tensor"
+        ),
+        "aot::sum_backward.default": aot_lib.define(
+            "sum_backward",
+            signature="(Tensor grad, input_shape, axis=None, keepdims=False) -> Tensor",
+        ),
+        "aot::transpose2d.default": aot_lib.define(
+            "transpose2d", signature="(Tensor input) -> Tensor"
+        ),
+        "aot::relu_backward.default": aot_lib.define(
+            "relu_backward", signature="(Tensor grad, Tensor input) -> Tensor"
+        ),
+    }
+    assert all(key == value for key, value in aot_schemas.items())
+    for operator, kernel in (
+        ("aot::unbroadcast.default", _backend_aot_unbroadcast),
+        ("aot::sum_backward.default", _backend_aot_sum_backward),
+        ("aot::transpose2d.default", _backend_aot_transpose2d),
+        ("aot::relu_backward.default", _backend_aot_relu_backward),
+    ):
+        _register_backend_pair(operator, kernel)
 
     dispatcher.register_fallback(DispatchKey.NOGRAD, _no_grad_fallback)
     _REGISTERED = True

@@ -1,7 +1,7 @@
-"""Reference interpreter for v0.11 Graph IR."""
+"""Reference interpreter for mini-pytorch Graph IR."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 
@@ -18,12 +18,12 @@ class GraphInterpreter:
         graph.validate()
         self.graph = graph
 
-    def run(self, *inputs: "Tensor"):
+    def _execute(self, *inputs: "Tensor") -> tuple[Any, dict[int, Any]]:
         from ..dispatcher import dispatcher
         from ..tensor import Tensor
 
         if is_capturing():
-            raise RuntimeError("GraphInterpreter cannot run inside an active v0.11 capture")
+            raise RuntimeError("GraphInterpreter cannot run inside an active graph capture")
         if len(inputs) != len(self.graph.inputs):
             raise ValueError(
                 f"graph expects {len(self.graph.inputs)} inputs, got {len(inputs)}"
@@ -53,9 +53,31 @@ class GraphInterpreter:
             result = dispatcher.dispatch(node.operator, *args, **kwargs)
             self._bind(node.outputs, result, env)
 
-        return self._resolve(self.graph.outputs, env)
+        return self._resolve(self.graph.outputs, env), env
+
+    def run(self, *inputs: "Tensor"):
+        output, _ = self._execute(*inputs)
+        return output
 
     __call__ = run
+
+    def run_with_values(self, *inputs: "Tensor", value_ids: Iterable[int]):
+        """Replay and also expose selected internal Values.
+
+        v0.13 uses this as the explicit forward/backward ABI for saved forward
+        values. It is intentionally an interpreter/debug surface rather than a
+        hidden Python closure over intermediates.
+        """
+
+        output, env = self._execute(*inputs)
+        selected = []
+        for value_id in value_ids:
+            value_id = int(value_id)
+            try:
+                selected.append(env[value_id])
+            except KeyError as exc:
+                raise ValueError(f"requested graph value %v{value_id} is unavailable") from exc
+        return output, tuple(selected)
 
     def _resolve(self, spec: Any, env: dict[int, Any]) -> Any:
         if isinstance(spec, ValueRef):

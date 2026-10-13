@@ -1,4 +1,4 @@
-"""Educational graph/compiler-facing APIs through mini-pytorch v0.12."""
+"""Educational graph/compiler-facing APIs through mini-pytorch v0.13."""
 from .ir import Graph, Node, TensorConstant, Value, ValueRef
 from .capture import CapturedGraph, GraphBreakError, capture, is_capturing
 from .interpreter import GraphInterpreter
@@ -20,6 +20,15 @@ from .compiled import (
     CompilationStats,
     CompiledFunction,
     compile_graph,
+)
+from .aot import (
+    AOTContext,
+    AOTDifferentiationError,
+    AOTForwardResult,
+    AOTProgram,
+    DifferentiationSpec,
+    aot_compile,
+    differentiate_graph,
 )
 
 __all__ = [
@@ -52,4 +61,11 @@ __all__ = [
     "CompilationExplanation",
     "CompiledFunction",
     "compile_graph",
+    "AOTDifferentiationError",
+    "DifferentiationSpec",
+    "AOTContext",
+    "AOTForwardResult",
+    "AOTProgram",
+    "differentiate_graph",
+    "aot_compile",
 ]
