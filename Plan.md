@@ -2,16 +2,16 @@
 
 > Canonical roadmap for `main`.
 >
-> **Invariant:** `main` is always the newest integrated, validated state. Version branches are readable learning snapshots. A completed version is validated, frozen, then integrated into `main` before the next branch is created.
+> **Invariant:** `main` is always the newest integrated, validated state. Version branches are readable learning snapshots. A completed version is validated, frozen, integrated into `main`, then `main` alone advances the project-level roadmap.
 
 ## 1. Project purpose
 
 mini-pytorch removes one layer of PyTorch “magic” at a time with readable Python/NumPy implementations.
 
-The roadmap follows architectural dependency order:
+The roadmap follows architectural dependency order rather than API popularity:
 
 ```text
-Tensor / Autograd
+Tensor / Dynamic Autograd
       ↓
 Module / Optimizer
       ↓
@@ -29,9 +29,19 @@ Advanced Autograd Engine
       ↓
 Training Runtime / Reproducibility
       ↓
-Distributed / DDP Concepts
+Distributed / DDP concepts
       ↓
-Graph IR / compiler stack
+Graph IR / eager capture
+      ↓
+Dynamo-like guards + graph cache
+      ↓
+AOTAutograd-like forward/backward capture
+      ↓
+Inductor-like lowering + fusion
+      ↓
+Runtime / performance mechanics
+      ↓
+v1.0 integrated architecture
 ```
 
 One version should introduce one dominant mental model and preserve earlier invariants.
@@ -43,44 +53,71 @@ One version should introduce one dominant mental model and preserve earlier inva
 ## v0.1 — Eager Tensor + Dynamic Autograd ✅
 
 ```text
-Tensor → Function → dynamic graph → backward → Parameter → Module → Optimizer
+Tensor
+  ↓
+Function.apply
+  ↓
+GradFn / Context graph
+  ↓
+backward
 ```
 
 Key mechanisms:
 
 - Tensor / `requires_grad`;
 - reverse-mode autodiff;
-- dynamic graph;
-- gradient accumulation;
+- dynamic graph construction;
+- leaf gradients;
+- broadcasting-aware gradients;
 - Module / Parameter / Linear / Sequential;
 - SGD / Adam;
 - numerical gradcheck.
 
+Primary learning question:
+
+> How can ordinary eager Tensor operations dynamically build a graph that later computes gradients automatically?
+
+---
+
 ## v0.2 — Optimizer State + LR Scheduler ✅
 
 ```text
-Parameter
-   ↓
+Parameter.grad
+     ↓
 Optimizer parameter groups + state
-   ↓
+     ↓
 LR Scheduler
 ```
 
 Key mechanisms:
 
-- enhanced SGD;
+- SGD momentum / dampening / Nesterov;
 - Adam / AdamW / Adamax;
 - RMSprop / Adagrad;
 - parameter groups;
-- optimizer state serialization;
+- optimizer `state_dict` / `load_state_dict`;
 - StepLR / MultiStepLR / ExponentialLR;
 - CosineAnnealingLR / LinearLR / LambdaLR;
 - ReduceLROnPlateau.
 
+Primary learning question:
+
+> Why are optimizer dynamics and learning-rate time state independent from the model weights themselves?
+
+---
+
 ## v0.3 — Dataset / Sampler / DataLoader + MNIST ✅
 
 ```text
-Dataset → Sampler → BatchSampler → DataLoader → Tensor batch
+Dataset
+  ↓ indices
+Sampler
+  ↓ batches of indices
+BatchSampler
+  ↓ samples
+DataLoader
+  ↓
+Tensor batches
 ```
 
 Key mechanisms:
@@ -92,12 +129,29 @@ Key mechanisms:
 - MNIST IDX reader;
 - Flatten / CrossEntropyLoss;
 - MLP MNIST training;
-- Loguru / metrics / plots / checkpoints in examples.
+- Loguru training logs;
+- metrics CSV;
+- loss / accuracy plots;
+- example checkpoints.
+
+Primary learning question:
+
+> Why are dataset storage, sample ordering, batching and collation separate abstractions?
+
+---
 
 ## v0.4 — Tensor Memory Model ✅
 
 ```text
-Storage + shape + stride + storage_offset + VersionCounter
+Tensor metadata
+├── shape
+├── stride
+└── storage_offset
+       │
+       ▼
+     Storage
+       │
+       └── VersionCounter
 ```
 
 Key mechanisms:
@@ -105,11 +159,18 @@ Key mechanisms:
 - explicit Storage;
 - views / aliasing;
 - transpose / permute / slicing;
+- negative stride;
 - `view()` vs `reshape()`;
 - contiguous semantics;
 - inplace mutation;
 - shared version counter;
 - saved-version Autograd safety.
+
+Primary learning question:
+
+> Why is a Tensor more than a NumPy array, and why can two Tensors represent different logical views of the same Storage?
+
+---
 
 ## v0.5 — Operator Registry + Dispatcher ✅
 
@@ -123,6 +184,8 @@ Dispatcher / DispatchKeySet
 Autograd / NoGrad / backend key
    ↓
 redispatch
+   ↓
+backend kernel
 ```
 
 Key mechanisms:
@@ -131,12 +194,18 @@ Key mechanisms:
 - operator/kernel registry;
 - DispatchKey / DispatchKeySet;
 - dispatch priority;
-- fallbacks;
+- fallback;
 - redispatch;
-- backend numerical kernels;
+- CPU numerical kernels;
 - Autograd wrappers above backend kernels.
 
 Validated baseline: **80 tests**.
+
+Primary learning question:
+
+> Why does a framework route a logical operator through a Dispatcher instead of calling one implementation directly?
+
+---
 
 ## v0.6 — Neural-Network Operator Stack / CNN ✅
 
@@ -154,8 +223,9 @@ backend NN kernel
 
 Key mechanisms:
 
-- Conv2d reference loops + im2col;
-- Conv2d input/weight/bias gradients;
+- Conv2d readable nested-loop reference;
+- Conv2d im2col path;
+- input/weight/bias gradients;
 - MaxPool2d;
 - Dropout;
 - BatchNorm1d / BatchNorm2d;
@@ -164,15 +234,22 @@ Key mechanisms:
 
 Validated baseline: **90 tests**.
 
+Primary learning question:
+
+> Can the Dispatcher architecture support non-trivial neural-network operators without pushing Autograd into the numerical kernel?
+
+---
+
 ## v0.7 — Device / Backend Abstraction ✅
 
 ```text
-Tensor metadata
-     ↓
-Storage + Device
-     ↓
+Tensor
+shape / stride / dtype / device
+      ↓
+Storage
+      ↓
 backend-owned allocation
-     ↓
+      ↓
 Dispatcher
  ┌────┴────┐
  CPU      EDU
@@ -181,17 +258,23 @@ Dispatcher
 Key mechanisms:
 
 - immutable Device;
-- Backend abstraction/registry;
+- Backend registry;
 - CPU + deterministic educational `edu` backend;
 - backend-owned Storage;
-- Tensor.device / Tensor.to(device);
-- cross-device alias break;
-- differentiable transfer;
+- `Tensor.device`;
+- `Tensor.to(device)`;
+- differentiable transfers;
 - device-aware DispatchKey inference;
-- mixed-device errors;
-- Module.to(device).
+- mixed-device failures;
+- `Module.to(device)`.
 
 Validated baseline: **103 tests**.
+
+Primary learning question:
+
+> How can the same Tensor/operator API execute on different backends without scattering `if device` logic throughout the framework?
+
+---
 
 ## v0.8 — Advanced Autograd Engine ✅
 
@@ -212,16 +295,23 @@ leaf grad       retained non-leaf grad
 Key mechanisms:
 
 - explicit AutogradEngine separated from Tensor;
-- topological traversal and transient local gradients;
+- topological traversal;
+- transient local gradients;
 - Context release state;
 - repeated-backward failure after release;
 - `retain_graph=True`;
 - non-leaf `retain_grad()`;
 - gradient hooks + removable handles;
-- custom Function teaching path;
-- explicit higher-order-gradient boundary.
+- public custom Function teaching path;
+- explicit higher-order-gradient limitation.
 
 Validated baseline: **123 tests**.
+
+Primary learning question:
+
+> What does an Autograd execution engine do beyond merely traversing a permanent DAG?
+
+---
 
 ## v0.9 — Training Runtime / Serialization / Reproducibility ✅
 
@@ -243,23 +333,23 @@ metadata.json + tensors.npz
 deterministic continuation
 ```
 
-Implemented:
+Key mechanisms:
 
 - framework PCG64 RNG;
 - `manual_seed / get_rng_state / set_rng_state`;
-- framework RNG integration for Linear/Conv2d/default Dropout/default RandomSampler;
-- explicit `TrainingState`;
-- schema-versioned `CheckpointState`;
+- RNG integration for Linear/Conv2d/default Dropout/default RandomSampler;
+- TrainingState;
+- schema-versioned CheckpointState;
 - inspectable JSON + NPZ serialization;
-- nested optimizer state encoding without pickle;
-- staged/rename checkpoint publication;
-- model/optimizer/scheduler restoration;
+- optimizer nested state encoding without pickle;
+- staged checkpoint publication;
+- model/optimizer/scheduler restore;
 - RNG restore-last semantics;
-- target CPU/EDU device preservation;
+- target CPU/EDU placement preservation;
 - strict schema/shape/group/scheduler failures;
-- deterministic uninterrupted-vs-resumed integration proof.
+- uninterrupted-vs-resumed deterministic equivalence.
 
-Central proof compares exact:
+Central proof compares:
 
 ```text
 loss trajectory
@@ -272,654 +362,956 @@ future framework RNG draws
 
 Validated baseline: **140 tests**.
 
+Primary learning question:
+
+> What exact state must be saved so “resume training” means the future computation remains the same rather than merely reloading model weights?
+
 ---
 
-# 3. Current next milestone — v0.10 Distributed / DDP Concepts 🎯
-
-## 3.1 Why distributed comes now
-
-By v0.9, a single training process has explicit mechanisms for:
+## v0.10 — Distributed / DDP Concepts ✅
 
 ```text
-Tensor execution
-Autograd gradient generation
-Tensor gradient hooks
-Optimizer state
-Data sampling
-Device/backend placement
-Training runtime/checkpoint state
+Dataset
+  ↓
+DistributedSampler
+  ↓
+rank-local batches
+  ↓
+replica forward/backward
+  ↓
+leaf Parameter hooks
+  ↓
+Reducer
+  ↓
+GradientBucket(s)
+  ↓
+ProcessGroup.all_reduce
+  ↓
+synchronized Parameter.grad
+  ↓
+Optimizer.step
 ```
 
-The next architectural question is no longer how one process trains, but how multiple replicas cooperate.
+Implemented:
 
-Suppose two replicas start from identical parameters:
+- explicit rank / world-size semantics;
+- deterministic in-process ProcessGroup world;
+- asynchronous educational CollectiveWork handle;
+- collective sequence ordering;
+- SUM / MEAN all-reduce;
+- operation / shape / dtype collective validation;
+- DistributedSampler;
+- deterministic `set_epoch`;
+- padding / drop-last partition semantics;
+- DistributedDataParallel Module wrapper;
+- Tensor leaf-gradient hooks reused as readiness signals;
+- Reducer;
+- reverse-registration gradient buckets;
+- flatten / all-reduce / unflatten;
+- explicit two-phase synchronization barrier;
+- initial replica-state broadcast helper;
+- stale-gradient and unused-parameter failure semantics;
+- EDU placement preservation.
+
+Central mathematical proof:
 
 ```text
-Replica rank 0              Replica rank 1
-      │                            │
- batch A                        batch B
-      │                            │
- forward                        forward
-      │                            │
- backward                       backward
-      │                            │
- grad_A                         grad_B
+rank 0 local mean gradient
+        +
+rank 1 local mean gradient
+        ↓ average
+DDP synchronized gradient
 ```
 
-If each optimizer immediately uses its own local gradient:
+is compared with:
 
 ```text
-parameter_0' != parameter_1'
+one reference model
+concatenated global batch
+mean-reduced loss
+        ↓
+reference gradient
 ```
 
-The replicas diverge.
-
-DDP's core idea is conceptually:
+After the same SGD step:
 
 ```text
-local gradients
+replica 0 parameters
+== replica 1 parameters
+== global-batch reference parameters
+```
+
+Validated baseline: **159 tests**.
+
+Primary learning question:
+
+> How do data partitioning, gradient readiness, bucketization and collective reduction compose so replicated models remain equivalent after optimizer updates?
+
+---
+
+# 3. Current next milestone — v0.11 Graph IR / Eager-to-Graph Capture 🎯
+
+## 3.1 Why Graph IR comes now
+
+Through v0.10, mini-pytorch already has a reasonably complete eager execution stack:
+
+```text
+Python Tensor API
       ↓
-collective reduction
+logical operator
       ↓
-shared averaged gradients
+Dispatcher
       ↓
-identical optimizer updates
+Autograd/backend policy
+      ↓
+numerical execution
 ```
 
-The central v0.10 question is:
+This means there is finally a stable logical-operator boundary worth observing.
 
-> How should dataset partitioning, rank/world-size semantics, gradient-ready events, gradient buckets and collective reduction compose so multiple replicas remain equivalent after every optimizer step?
+A compiler cannot optimize a Python execution history until that execution is represented as explicit data.
+
+The central v0.11 question is:
+
+> How can an eager sequence of Tensor/operator calls be represented as explicit `Value / Node / Graph` data, then replayed through the existing Dispatcher while preserving eager forward and backward semantics?
+
+v0.11 is therefore an **IR and capture milestone**, not a fusion/performance milestone.
 
 ---
 
 ## 3.2 Target architecture
 
 ```text
-                 global Dataset
+                 Python function
                       │
                       ▼
-              DistributedSampler
-              ┌───────┴────────┐
-              ▼                ▼
-           rank 0            rank 1
-           indices           indices
-              │                │
-              ▼                ▼
-          replica 0         replica 1
-              │                │
-          local loss        local loss
-              │                │
-              ▼                ▼
-       AutogradEngine     AutogradEngine
-              │                │
-              ▼                ▼
-      parameter hooks    parameter hooks
-              │                │
-              └──────┬─────────┘
-                     ▼
-                 DDP Reducer
-                     │
-             gradient buckets
-                     │
-                     ▼
-                ProcessGroup
-                     │
-                  all_reduce
-                     │
-                     ▼
-             averaged gradients
-                     │
-                     ▼
-             Optimizer.step()
-                     │
-                     ▼
-          replica parameters equal
+               eager Tensor calls
+                      │
+                      ▼
+                  Dispatcher
+                  /        \
+                 /          \
+                ▼            ▼
+        normal eager       capture observer
+        execution               │
+                │               ▼
+                │          Graph IR
+                │     ┌─────────┼─────────┐
+                │     ▼         ▼         ▼
+                │   Values     Nodes    Outputs
+                │               │
+                └───────────────┘
+                                │
+                                ▼
+                       GraphInterpreter
+                                │
+                                ▼
+                           Dispatcher
+                                │
+                                ▼
+                      fresh eager execution
 ```
 
-Keep the following responsibilities separate:
+Critical principle:
 
 ```text
-DistributedSampler
-→ which data indices belong to a rank
-
-Reducer
-→ which parameter gradients are ready / grouped
-
-ProcessGroup
-→ how values from ranks are collectively combined
-
-Optimizer
-→ how synchronized gradients update parameters
+capture records operator semantics
+but does not become a second numerical implementation
 ```
+
+Replay should reuse the existing operator/Dispatcher stack.
 
 ---
 
-## 3.3 v0.10.1 — Distributed context: rank and world_size
+# 3.3 v0.11.1 — Explicit IR data model
 
-Introduce a small explicit distributed context/value object.
+Introduce a small compiler package, for example:
 
-Possible API:
+```text
+mini_pytorch/compiler/
+├── __init__.py
+├── ir.py
+├── capture.py
+└── interpreter.py
+```
+
+Core IR concepts:
 
 ```python
-DistributedContext(
-    rank=0,
-    world_size=2,
-)
+Value
+Node
+Graph
 ```
 
-Required validation:
+### Value
+
+A Value represents one data edge in the graph.
+
+Suggested fields:
 
 ```text
-world_size >= 1
-0 <= rank < world_size
+id
+kind
+metadata
+constant payload when applicable
 ```
 
-The object should make rank/world-size explicit rather than relying on hidden globals or environment variables for the educational version.
-
-Concepts to document:
+Possible kinds:
 
 ```text
-world_size
-→ number of participating replicas
-
-rank
-→ this replica's unique position in [0, world_size)
+input
+constant
+intermediate
 ```
 
-Tests:
+Optional metadata useful for inspection:
 
-- valid contexts;
-- invalid negative rank;
-- rank >= world_size;
-- invalid world_size.
+```text
+shape
+dtype
+device
+```
+
+Do not treat the old eager Tensor Python object itself as the persistent graph identity.
+
+### Node
+
+A Node represents one logical operator invocation.
+
+Suggested fields:
+
+```text
+id
+op_name
+args specification
+kwargs specification
+output Value ids
+```
+
+`op_name` should use the existing logical operator/schema name where possible, e.g.:
+
+```text
+aten::add.Tensor
+aten::matmul.default
+aten::relu.default
+```
+
+### Graph
+
+A Graph owns:
+
+```text
+input Value ids
+ordered Nodes
+constant Values
+graph output Value ids
+```
+
+Required invariants:
+
+- deterministic monotonically increasing IDs;
+- topological node order;
+- every referenced Value is already defined;
+- graph outputs reference existing Values;
+- no duplicate Value producer;
+- stable human-readable formatting.
 
 ---
 
-## 3.4 v0.10.2 — ProcessGroup and collective semantics
+# 3.4 v0.11.2 — Capture context
 
-Introduce an abstract ProcessGroup boundary.
+Introduce an explicit tracing/capture context rather than a permanent global mode.
 
-Conceptual interface:
+Possible public API:
 
 ```python
-class ProcessGroup:
-    def all_reduce(...):
-        ...
+captured = trace(fn, *example_inputs)
 ```
 
-Do **not** tie DDP directly to NumPy global helpers or network code.
+or an internal context manager used by `trace`:
 
-For v0.10 use a deterministic in-process implementation, e.g.:
+```python
+with capture_graph(...) as capture:
+    out = fn(*inputs)
+```
+
+Core execution model:
 
 ```text
-InProcessCollectiveWorld
-        │
-        ├── contribution from rank 0
-        ├── contribution from rank 1
-        └── ...
-        ↓
-ProcessGroup collective round
-        ↓
-sum / mean result
+real eager input Tensors
+      ↓
+execute operator normally
+      ↓
+obtain real eager output Tensor
+      ↓
+record logical op invocation
+      ↓
+map eager Tensor identity → IR Value id
 ```
 
-### Collective invariants
+The eager execution remains the source of truth during tracing.
 
-For one logical all-reduce round, all ranks must agree on:
+Capture must be scoped and cleaned up even when the traced function raises.
 
-- world size;
-- collective sequence/round id;
-- tensor shape;
-- dtype;
-- reduction operation.
-
-At minimum support:
-
-```text
-SUM
-MEAN
-```
-
-DDP gradient synchronization should normally use mean semantics so it can be compared to a reference global-batch gradient.
-
-### Important simulation constraint
-
-Ordinary CI executes rank simulations sequentially. A hook on rank 0 cannot synchronously block waiting for rank 1, because rank 1 backward has not executed yet.
-
-Therefore v0.10 should not model network collectives as blocking calls from inside gradient hooks.
-
-Use an educational two-phase structure:
-
-```text
-phase 1: local backward
-         ↓
-         hooks stage / mark local grads ready
-
-phase 2: explicit synchronization barrier
-         ↓
-         collective combines all replicas
-         ↓
-         synchronized grads written back
-```
-
-This keeps the dependency graph correct without inventing fake concurrency.
+Do not leak capture state into unrelated subsequent eager calls.
 
 ---
 
-## 3.5 v0.10.3 — DistributedSampler
+# 3.5 v0.11.3 — Dispatcher capture observer boundary
 
-Add a rank-aware sampler inspired by `torch.utils.data.DistributedSampler`.
-
-Possible API:
-
-```python
-DistributedSampler(
-    dataset,
-    num_replicas=world_size,
-    rank=rank,
-    shuffle=True,
-    seed=0,
-    drop_last=False,
-)
-
-sampler.set_epoch(epoch)
-```
-
-Core rule:
+The Dispatcher is the correct high-level observation point because it already sees:
 
 ```text
-same seed + same epoch
-→ all ranks derive the same global permutation
-→ each rank selects a deterministic strided partition
+logical operator name
+Tensor arguments
+kwargs / attributes
+backend-independent operator identity
 ```
 
-For example:
+Add the smallest possible observation hook around logical operator dispatch.
+
+Conceptually:
 
 ```text
-global permutation:
-[7, 2, 5, 1, 6, 0, 3, 4]
-
-rank 0 / world_size 2:
-[7, 5, 6, 3]
-
-rank 1 / world_size 2:
-[2, 1, 0, 4]
+Dispatcher.call(op_name, ...)
+      ↓
+normal dispatch/execution
+      ↓
+result
+      ↓
+if capture active:
+    capture.record(op_name, args, kwargs, result)
 ```
 
-Need explicit behavior when dataset size is not divisible by world size:
+Important:
 
-```text
-drop_last=True
-→ truncate globally to evenly divisible size
+- capturing must not change which DispatchKey/kernel runs;
+- capture must not duplicate Autograd wrapper logic;
+- capture observer failures should not silently corrupt eager execution;
+- replay should call the Dispatcher again, not backend kernels directly.
 
-drop_last=False
-→ deterministically pad/repeat indices to equal replica lengths
-```
-
-Why equal replica lengths matter:
-
-```text
-same number of local training iterations
-→ same number/order of collectives
-```
-
-`set_epoch(epoch)` must change shuffle deterministically while keeping all ranks aligned.
-
-Tests:
-
-- partitions cover expected global indices;
-- ranks do not overlap when divisible and no padding is required;
-- deterministic padding behavior;
-- `drop_last` behavior;
-- same seed+epoch reproducibility;
-- different epoch changes permutation;
-- invalid rank/world-size errors.
+This becomes the conceptual bridge from eager runtime to compiler IR.
 
 ---
 
-## 3.6 v0.10.4 — DDP wrapper boundary
+# 3.6 v0.11.4 — Inputs and constants
 
-Introduce an educational wrapper, e.g.:
-
-```python
-DistributedDataParallel(
-    module,
-    process_group=...,
-    bucket_cap=...,
-)
-```
-
-The wrapper should preserve normal Module usage:
-
-```python
-output = ddp(input)
-```
-
-and delegate forward directly to the wrapped module.
-
-DDP should not implement different forward math. Its main responsibility is gradient synchronization after backward.
-
-Possible structure:
-
-```text
-DistributedDataParallel
-├── module
-├── process_group / context
-└── Reducer
-```
-
-Parameters stay normal Parameter objects. Optimizers may continue to receive:
-
-```python
-optimizer = SGD(ddp.parameters(), ...)
-```
-
-or the underlying module parameters, as long as the behavior is documented and tested.
-
----
-
-## 3.7 v0.10.5 — Gradient-ready hooks and Reducer
-
-v0.8 already added Tensor hooks. v0.10 should reuse them instead of changing Autograd formulas.
-
-For each trainable parameter:
-
-```text
-backward computes local parameter grad
-       ↓
-parameter hook fires
-       ↓
-Reducer marks parameter ready
-       ↓
-local grad copied/staged for bucket
-```
-
-The hook should **not** perform a blocking all-reduce in the single-process simulation.
-
-Reducer responsibilities:
-
-- register/remove parameter hooks;
-- map Parameter → bucket location;
-- record ready state;
-- reject duplicate-ready events in one iteration when inappropriate;
-- expose whether all expected local grads are ready;
-- reset iteration state after synchronization.
-
-Important invariant:
-
-```text
-Reducer observes Autograd
-but does not become AutogradEngine
-```
-
-Tests:
-
-- hooks fire when parameters receive grad;
-- parameters with no gradient are handled according to documented policy;
-- duplicate/incorrect readiness errors are clear;
-- iteration reset works.
-
----
-
-## 3.8 v0.10.6 — Gradient buckets
-
-Real DDP groups many gradients into buckets to reduce communication overhead.
-
-Educational v0.10 should model the mechanism even though in-process communication is cheap.
+Tracing needs to distinguish runtime inputs from constants.
 
 Example:
 
-```text
-Parameter A grad shape (4, 8)
-Parameter B grad shape (4,)
-Parameter C grad shape (2, 4)
-          │
-          ▼
-flatten in deterministic parameter order
-          │
-          ▼
-Bucket 0 [ A | B ]
-Bucket 1 [ C ]
+```python
+def fn(x, w):
+    return (x @ w) + 1.0
 ```
 
-Required metadata per bucket:
-
-- parameter order;
-- flat offsets;
-- original shapes;
-- dtype;
-- total element count;
-- ready count/state.
-
-Synchronization:
+IR should conceptually represent:
 
 ```text
-local bucket rank 0
-local bucket rank 1
-       ↓
-ProcessGroup all_reduce(mean)
-       ↓
-reduced flat bucket
-       ↓
-unflatten
-       ↓
-write synchronized arrays into Parameter.grad
+%0 = input x
+%1 = input w
+%2 = constant 1.0
+%3 = aten::matmul.default(%0, %1)
+%4 = aten::add.Tensor(%3, %2)
+return %4
 ```
 
-Bucket construction should be deterministic across replicas with identical model structure.
+Requirements:
 
-Do not add compression, fp16 communication or overlap optimization yet.
+- example Tensor arguments become graph input placeholders;
+- Tensor/scalar constants become explicit constants;
+- constant payloads are copied/owned by the graph rather than hidden live references where practical;
+- kwargs remain explicit and deterministic;
+- nested simple argument structures are either deliberately supported or deliberately rejected with a clear error.
+
+Do not silently capture arbitrary mutable Python objects.
 
 ---
 
-## 3.9 v0.10.7 — Synchronization barrier API
+# 3.7 v0.11.5 — Initial supported operator subset
 
-Because ranks are simulated sequentially, expose a clear synchronization phase rather than hiding it.
+Do not attempt whole-framework capture immediately.
 
-Possible educational API forms:
+Start from operators already routed cleanly through the Dispatcher:
 
-```python
-synchronize_ddp([ddp_rank0, ddp_rank1])
+```text
+aten::add.Tensor
+aten::mul.Tensor
+aten::matmul.default
+aten::relu.default
+aten::sum.default
 ```
 
-or:
+Then, if the architecture remains clear, include selected NN operators:
 
-```python
-world.synchronize(reducers)
+```text
+aten::conv2d.default
+aten::max_pool2d.default
 ```
 
-The API should:
+Capture support is a whitelist/contract for this milestone.
 
-1. verify all ranks are represented exactly once;
-2. verify reducers have compatible bucket layout;
-3. verify local gradients are ready;
-4. reduce matching buckets across ranks;
-5. divide by world size for mean semantics;
-6. write grads back to each replica;
-7. reset synchronization state for the next iteration.
+An unsupported operator must not disappear from the graph.
 
-This explicit barrier corresponds conceptually to the synchronization that a real asynchronous ProcessGroup would coordinate during backward.
+It should produce a clear graph-break/capture error such as:
+
+```text
+GraphBreak:
+operator/path is not capture-supported in v0.11
+```
 
 ---
 
-## 3.10 v0.10.8 — Replica equivalence integration test
+# 3.8 v0.11.6 — GraphInterpreter
 
-This is the central v0.10 proof.
+A captured graph becomes useful only if it can be replayed with new inputs.
 
-### Setup
+Implement a small interpreter:
 
-Create one reference model and `world_size=2` replica models with identical initial state.
-
-Global batch:
-
-```text
-[x0, x1, x2, x3]
+```python
+result = GraphInterpreter(graph).run(*new_inputs)
 ```
 
-Reference path:
+Execution model:
 
 ```text
-one model
-  ↓
-full batch of 4
-  ↓
-mean loss
-  ↓
+bind graph inputs
+      ↓
+materialize constants
+      ↓
+for node in graph.nodes:
+    resolve Value references
+    reconstruct args / kwargs
+    Dispatcher.call(node.op_name, ...)
+    bind output Value ids
+      ↓
+resolve graph outputs
+```
+
+Important invariant:
+
+> Replay must create fresh eager Tensor/GradFn objects. IR does not store or reuse the original trace-time Autograd graph.
+
+Therefore replayed graph outputs should naturally participate in the existing Autograd Engine.
+
+---
+
+# 3.9 v0.11.7 — Forward and backward equivalence
+
+Central correctness proof should compare:
+
+### Eager
+
+```text
+new inputs
+   ↓
+fn(inputs)
+   ↓
+loss
+   ↓
 backward
-  ↓
-global-batch gradient
-  ↓
-optimizer.step
 ```
 
-Distributed simulation:
+### Captured replay
 
 ```text
-rank 0 sees first local batch
-rank 1 sees second local batch
-          ↓
-local backward independently
-          ↓
-DDP synchronize(mean)
-          ↓
-each rank receives average local gradient
-          ↓
-optimizer.step independently
+same new inputs
+   ↓
+GraphInterpreter(graph)
+   ↓
+loss
+   ↓
+backward
 ```
 
-With equally sized local batches and mean loss, the synchronized gradient should match the reference global-batch gradient.
-
-Assertions:
+Assert equivalence of:
 
 ```text
-rank0 synchronized grad == reference grad
-rank1 synchronized grad == reference grad
-
-rank0 params after step == reference params
-rank1 params after step == reference params
-rank0 params == rank1 params
+forward outputs
+input gradients
+parameter/input-like Tensor gradients
 ```
 
-Run multiple steps, not just one, to prove replicas remain locked together.
+at appropriate numerical tolerance.
 
-Add a DistributedSampler variant of the experiment to show data partitioning and synchronization compose correctly.
+This proves that graph capture/replay did not invent a second semantic system.
 
 ---
 
-## 3.11 v0.10.9 — Collective and DDP failure semantics
+# 3.10 v0.11.8 — Stable textual IR
 
-Tests should explicitly cover errors such as:
+Add a deterministic readable format such as:
 
-- invalid rank/world size;
-- duplicate rank registration;
-- missing rank contribution;
-- mismatched tensor shapes;
-- mismatched dtype;
-- incompatible bucket count/order/layout;
-- synchronization before local backward is ready;
-- synchronization twice without a new backward iteration;
-- replica model parameter layout mismatch;
-- invalid reduction operation.
+```text
+graph(%0: Tensor, %1: Tensor):
+  %2 = aten::matmul.default(%0, %1)
+  %3 = aten::relu.default(%2)
+  %4 = aten::sum.default(%3, axis=None, keepdims=False)
+  return %4
+```
 
-Do not silently skip a rank or parameter to make synchronization complete.
+The exact syntax can remain educational, but output must be stable for the same graph.
+
+Why this matters:
+
+- humans can inspect what tracing captured;
+- tests can assert graph structure;
+- later v0.12 guards can refer to graph input metadata;
+- later lowering stages have an explicit input representation.
+
+Do not generate Python source code yet.
 
 ---
 
-## 3.12 Suggested source layout
+# 3.11 v0.11.9 — Graph-break semantics
 
-```text
-mini_pytorch/distributed/
-├── __init__.py
-├── context.py
-├── process_group.py
-├── sampler.py
-├── reducer.py
-└── ddp.py
+Explicitly document what v0.11 does **not** capture.
 
-tests/test_distributed.py
-docs/DISTRIBUTED_DDP.md
-examples/13_ddp_simulation.py
-```
+Potential graph breaks include:
 
-Keep responsibilities narrow:
+- direct `Function.apply` paths that bypass the capture-supported Dispatcher boundary;
+- unsupported logical operators;
+- arbitrary NumPy computation on `.data`;
+- Python side effects;
+- arbitrary mutable objects;
+- data-dependent Python control flow;
+- dynamic creation of unsupported structures.
 
-```text
-context.py
-→ rank/world_size values
+For this milestone, prefer a clear error over silently falling back and claiming a complete graph.
 
-process_group.py
-→ collective semantics/coordinator
-
-sampler.py
-→ dataset partitioning
-
-reducer.py
-→ grad readiness/bucket layout/writeback
-
-ddp.py
-→ Module-facing wrapper + synchronization integration
-```
+A future Dynamo-like layer may support segmented graphs/fallback regions, but v0.11 should make the boundary obvious first.
 
 ---
 
-## 3.13 v0.10 educational example
+# 3.12 v0.11 tests
 
 Add:
 
 ```text
-examples/13_ddp_simulation.py
+tests/test_graph_ir.py
+```
+
+Minimum coverage:
+
+### IR model
+
+- deterministic Value/Node IDs;
+- topological node ordering;
+- input/output identity;
+- explicit constant representation;
+- stable textual format;
+- invalid graph references rejected.
+
+### Capture
+
+- add/mul capture;
+- matmul/relu/sum composite graph;
+- kwargs/attributes captured;
+- graph input placeholders distinct from constants;
+- capture context does not leak after completion;
+- capture cleanup after exception.
+
+### Replay
+
+- same example inputs reproduce eager output;
+- different compatible input values replay correctly;
+- CPU replay;
+- EDU replay if the captured operator subset permits it;
+- outputs are fresh Tensor objects;
+- replay builds a fresh Autograd graph.
+
+### Autograd equivalence
+
+- eager vs graph forward equality;
+- eager vs graph input-gradient equality;
+- repeated replay creates independent graphs.
+
+### Failure paths
+
+- unsupported operator GraphBreak;
+- wrong graph input count;
+- incompatible constant/value reference;
+- malformed Node or duplicate producer;
+- unsupported argument structure fails clearly.
+
+Full historical suite must remain green.
+
+---
+
+# 3.13 v0.11 educational example
+
+Add:
+
+```text
+examples/14_graph_ir.py
 ```
 
 It should demonstrate:
 
 ```text
-build reference model
+def model(x, w):
+    return ((x @ w).relu() + 1.0).sum()
+
+example inputs
       ↓
-clone two replica states
+trace
       ↓
-construct DistributedSampler / contexts
+print Graph IR
       ↓
-local backward on each rank
+run with new inputs
       ↓
-print local gradients
+compare eager output
       ↓
-DDP synchronize
+backward eager vs replay
       ↓
-print averaged gradients
-      ↓
-optimizer.step
-      ↓
-prove replicas and reference match
+compare gradients
 ```
 
-Use Loguru for the walkthrough, keep data tiny, and require no multiprocessing/GPU/network.
+The example should make the difference between:
+
+```text
+trace-time eager graph
+IR graph
+replay-time fresh Autograd graph
+```
+
+explicit.
 
 ---
 
-## 3.14 v0.10 documentation
+# 3.14 v0.11 documentation
 
 Add:
 
 ```text
-docs/DISTRIBUTED_DDP.md
+docs/GRAPH_IR.md
 ```
 
-It should explain:
+Explain:
 
-- process vs rank vs world_size;
-- data parallel vs model parallel distinction;
-- why DistributedSampler exists;
-- local gradient vs synchronized gradient;
-- all-reduce sum vs mean;
-- ProcessGroup as communication abstraction;
-- why DDP uses Autograd hooks;
-- why gradients are bucketed;
-- why identical initial model state is required;
-- why collective ordering must match across ranks;
-- why the educational simulation uses an explicit barrier instead of blocking hook calls;
-- mapping from the simulation to real PyTorch DDP/NCCL architecture.
+- eager execution history vs persistent graph representation;
+- Value / Node / Graph;
+- why Dispatcher is a useful capture boundary;
+- graph inputs vs constants;
+- node argument references;
+- graph outputs;
+- trace-time eager execution;
+- interpreter replay;
+- replay-time Autograd graph;
+- graph breaks;
+- why v0.11 is not yet Dynamo/Inductor.
 
-Version branch must update:
+Version branch must also update:
+
+```text
+README.md
+version.md
+Agents.md
+MANIFEST.txt
+```
+
+---
+
+# 3.15 Definition of Done for v0.11
+
+Before freeze, v0.11 must demonstrate:
+
+- explicit inspectable `Value / Node / Graph` IR;
+- deterministic graph IDs/order/formatting;
+- scoped eager capture context;
+- Dispatcher observation without semantic fork;
+- explicit graph inputs/constants/outputs;
+- supported-op tracing;
+- explicit unsupported-op graph break;
+- graph replay through existing Dispatcher;
+- eager-vs-replay forward equivalence;
+- eager-vs-replay backward equivalence;
+- fresh Autograd graph on every replay;
+- CPU behavior preserved;
+- EDU behavior preserved where supported;
+- no regression to Tensor/Autograd/Dispatcher/DDP/checkpoint semantics;
+- docs/example complete;
+- exact final `v0.11` branch-head GitHub Actions green;
+- frozen tree integrated into `main`.
+
+## Explicit non-goals for v0.11
+
+Do not add yet:
+
+- Dynamo-style guards;
+- graph cache;
+- recompilation;
+- symbolic/dynamic shape system;
+- arbitrary Python control-flow capture;
+- graph segmentation/fallback regions;
+- AOTAutograd backward graph capture;
+- functionalization;
+- kernel lowering;
+- fusion;
+- generated source code;
+- performance claims.
+
+---
+
+# 4. Future milestones
+
+## v0.12 — Dynamo-like Guards and Graph Cache
+
+Core question:
+
+> When is a previously captured graph still valid for a new set of Python/Tensor inputs?
+
+Target concepts:
+
+```text
+captured Graph
+     +
+input specialization assumptions
+     ↓
+GuardSet
+     ↓
+new invocation
+     ↓
+check guards
+ ┌───┴────┐
+ pass    fail
+  │        │
+reuse   recapture/recompile
+```
+
+Planned mechanisms:
+
+- Tensor shape guard;
+- dtype guard;
+- device guard;
+- selected scalar/constant guard;
+- object-identity/structure guard where educationally useful;
+- GuardSet readable explanation;
+- graph cache;
+- cache hit/miss accounting;
+- guard failure reason;
+- deterministic recapture;
+- basic dynamic-shape experiment demonstrating why overly specific guards cause recompilation.
+
+Non-goals:
+
+- full CPython bytecode Dynamo;
+- arbitrary Python frame evaluation hooks;
+- production symbolic-shape algebra.
+
+---
+
+## v0.13 — AOTAutograd-like Forward / Backward Capture
+
+Core question:
+
+> How can differentiation itself become graph data rather than an opaque eager Engine execution?
+
+Target concepts:
+
+```text
+forward graph
+      ↓
+identify saved intermediates
+      ↓
+backward contract
+      ↓
+captured backward graph
+```
+
+Planned mechanisms:
+
+- explicit forward Graph;
+- backward Graph representation;
+- saved-intermediate interface;
+- parameter/input gradient outputs;
+- eager Autograd vs captured backward equivalence;
+- preparation for differentiable/lowered backward execution;
+- possibly introduce functionalized operator forms where mutation blocks graph transformation.
+
+Important dependency:
+
+v0.8 intentionally did not fake `create_graph=True`. v0.13 should revisit differentiable backward only when backward operations can genuinely be represented as Tensor/IR operations.
+
+---
+
+## v0.14 — Inductor-like Lowering and Kernel Fusion
+
+Core question:
+
+> Once high-level operator graphs are explicit, how can they be transformed into lower-level loop/kernel programs?
+
+Target pipeline:
+
+```text
+Graph IR
+   ↓
+normalized/lowered ops
+   ↓
+Loop IR
+   ↓
+fusion groups
+   ↓
+generated NumPy/Python kernel
+   ↓
+execute
+```
+
+Planned concepts:
+
+- lower pointwise operators;
+- lower simple reductions;
+- explicit loop/index IR;
+- pointwise fusion;
+- simple reduction fusion boundary;
+- generated Python/NumPy kernels;
+- eager vs compiled correctness;
+- basic timing comparison;
+- graph visualization of before/after fusion.
+
+No CUDA/Triton code generation is required for the first educational lowering milestone.
+
+---
+
+## v0.15 — Runtime / Performance Mechanics
+
+Potential concepts after the compiler path is understandable:
+
+- execution planning;
+- temporary-buffer lifetime;
+- simple memory reuse/planning;
+- allocator/caching concepts;
+- prefetch/scheduling concepts;
+- profiler events;
+- graph-level execution timing;
+- backend capability selection;
+- more realistic CPU optimization experiments.
+
+This milestone should be driven by measured bottlenecks rather than API imitation.
+
+---
+
+## v1.0 — Integrated Architecture Learning Release
+
+v1.0 should not mean “feature parity with PyTorch.”
+
+It should mean the educational architecture is coherent end-to-end:
+
+```text
+Tensor / Storage
+      ↓
+Dispatcher / Backend
+      ↓
+Autograd Engine
+      ↓
+Module / Optimizer / Data
+      ↓
+Training Runtime
+      ↓
+DDP Concepts
+      ↓
+Graph Capture
+      ↓
+Guards / Cache
+      ↓
+AOTAutograd-like
+      ↓
+Lowering / Fusion
+```
+
+Potential release tasks:
+
+- architecture consistency audit;
+- remove accidental cross-layer dependencies;
+- one end-to-end learning tutorial;
+- diagrams linking mini-pytorch concepts to real PyTorch subsystem names;
+- stable examples per subsystem;
+- full regression and package smoke tests;
+- consolidated `docs/LEARNING_PATH.md`;
+- release tag.
+
+---
+
+# 5. Permanent engineering rules
+
+## 5.1 Branch rule
+
+```text
+main = newest integrated validated state
+```
+
+A new version branch must always start from the latest `main`.
+
+A version branch is frozen only after its exact final HEAD passes GitHub Actions.
+
+After validation:
+
+```text
+frozen vX.Y
+    ↓ fast-forward/integrate
+main
+    ↓
+restore canonical README / Agents / Plan
+    ↓
+create next version branch later
+```
+
+Historical version branches do not receive future architecture features.
+
+## 5.2 Testing rule
+
+Every subsystem should include:
+
+- happy path;
+- invariant/property tests;
+- failure paths;
+- numerical/reference comparison where relevant;
+- integration proof;
+- full historical regression.
+
+Current integrated baseline:
+
+```text
+v0.10
+159 tests
+OK
+```
+
+## 5.3 Architecture rule
+
+Do not collapse layers merely to reduce code size.
+
+Examples:
+
+```text
+Autograd policy
+≠ backend numerical kernel
+
+Device
+≠ Storage
+
+Dataset
+≠ Sampler
+
+Optimizer state
+≠ model state
+
+Checkpoint serialization
+≠ checkpoint logical state
+
+ProcessGroup collective
+≠ Reducer
+
+Graph IR
+≠ Dispatcher implementation
+
+capture
+≠ compilation optimization
+```
+
+## 5.4 Documentation rule
+
+Every version must contain:
 
 ```text
 README.md
@@ -927,129 +1319,26 @@ version.md
 Agents.md
 ```
 
----
-
-## 3.15 Definition of Done for v0.10
-
-Before freeze, tests must demonstrate:
-
-- explicit rank/world-size validation;
-- deterministic DistributedSampler partitioning;
-- epoch-dependent shared shuffle;
-- ProcessGroup abstraction exists independently from DDP;
-- simulated SUM/MEAN collective correctness;
-- clear collective mismatch failures;
-- DDP wrapper delegates normal forward;
-- Tensor hooks mark local parameter gradients ready;
-- deterministic bucket construction;
-- flatten/reduce/unflatten correctness;
-- synchronized grads written back before optimizer step;
-- all replicas remain parameter-identical across multiple steps;
-- synchronized DDP result matches a single-model global-batch reference;
-- v0.9 deterministic checkpoint-resume regression still passes;
-- all earlier regression tests remain green;
-- architecture docs/example exist;
-- exact final v0.10 branch-head GitHub Actions passes;
-- frozen tree is integrated into `main`.
-
-### Explicit non-goals for v0.10
-
-Do not add yet:
-
-- multiprocessing launchers;
-- TCP/Gloo/NCCL transport;
-- GPU communication;
-- asynchronous communication overlap;
-- gradient compression;
-- fp16/bf16 communication hooks;
-- FSDP / ZeRO / sharded parameters;
-- distributed checkpointing;
-- RPC;
-- distributed Autograd across arbitrary graphs.
-
-The goal is architectural understanding of DDP's synchronization path.
-
----
-
-# 4. Future milestones
-
-## v0.11 — Graph IR and Eager-to-Graph Capture
-
-Core question:
-
-> How can eager operator execution be represented explicitly as a graph of values and nodes without changing numerical results?
-
-Planned concepts:
-
-- Node / Value / Graph;
-- supported-op tracing;
-- graph interpreter;
-- explicit graph breaks;
-- eager-vs-graph equivalence;
-- graph visualization.
-
-## v0.12 — Dynamo-like Guards and Graph Cache
-
-Core concepts:
-
-- shape/dtype/device/constant guards;
-- graph cache;
-- guard failure;
-- recompilation;
-- basic dynamic-shape experiments.
-
-## v0.13 — AOTAutograd-like Forward/Backward Capture
-
-Core concepts:
-
-- captured forward graph;
-- captured backward graph;
-- saved-intermediate contract;
-- eager vs captured gradient equivalence;
-- foundations for differentiable/lowered backward graphs.
-
-## v0.14 — Inductor-like Lowering and Kernel Fusion
-
-Core concepts:
-
-- lower-level loop IR;
-- pointwise fusion;
-- reduction lowering;
-- generated Python/NumPy kernels;
-- eager vs compiled correctness/performance comparison.
-
-## v0.15 — Runtime / Performance Mechanics
-
-Potential concepts after compiler architecture is understandable:
-
-- allocator/caching concepts;
-- scheduling;
-- prefetching;
-- kernel launch/fusion accounting;
-- profiling hooks.
-
-## v1.0 — Integrated Architecture
-
-Target educational map:
+Architecture/public changes should also add/update:
 
 ```text
-Tensor / Storage
-      ↓
-Dispatcher / Backend
-      ↓
-AutogradEngine
-      ↓
-Module / Optimizer / Data
-      ↓
-Training Runtime
-      ↓
-Distributed Reducer
-      ↓
-Graph Capture / Guards
-      ↓
-AOT backward
-      ↓
-Lowering / Fusion
+docs/*
+examples/*
+tests/*
+MANIFEST.txt
 ```
 
-The project reaches v1.0 when these layers compose cleanly while historical version branches remain readable snapshots of how the architecture grew.
+## 5.5 Honesty rule
+
+Do not claim mechanisms that the code does not truly implement.
+
+Examples:
+
+- `edu` is not CUDA;
+- in-process ProcessGroup is not NCCL/network distributed execution;
+- `create_graph=True` is not supported until backward is truly differentiable;
+- v0.9 does not guarantee arbitrary multi-worker mid-epoch resume;
+- v0.11 tracing will not be called whole-Python-program capture;
+- graph replay is not compilation/fusion by itself.
+
+The project is most useful when every claimed mechanism can be found, read and experimentally verified in the source.
