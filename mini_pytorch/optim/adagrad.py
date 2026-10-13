@@ -24,6 +24,10 @@ class Adagrad(Optimizer):
         if group["eps"] <= 0:
             raise ValueError("eps must be positive")
 
+    def _validate_param_state(self, parameter, values, *, group, index) -> None:
+        self._require_state_keys(values, {"step", "sum"}, index=index)
+        self._validate_step_value(values["step"], index=index)
+
     def step(self) -> None:
         for group in self.param_groups:
             lr, lr_decay = group["lr"], group["lr_decay"]
