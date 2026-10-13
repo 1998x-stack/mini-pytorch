@@ -41,6 +41,7 @@ class _CollectiveSlot:
     dtype: np.dtype
     contributions: Dict[int, np.ndarray] = field(default_factory=dict)
     result: np.ndarray | None = None
+    readers: set[int] = field(default_factory=set)
 
 
 class _InProcessWorld:
@@ -92,7 +93,7 @@ class _InProcessWorld:
             total = np.sum(np.stack(ordered, axis=0), axis=0)
             slot.result = total if op == "sum" else total / float(self.world_size)
 
-        return CollectiveWork(self, sequence)
+        return CollectiveWork(self, sequence, rank)
 
     def is_complete(self, sequence: int) -> bool:
         slot = self._slots.get(sequence)
@@ -103,29 +104,40 @@ class _InProcessWorld:
         present = set() if slot is None else set(slot.contributions)
         return tuple(rank for rank in range(self.world_size) if rank not in present)
 
-    def result(self, sequence: int) -> np.ndarray:
+    def result(self, sequence: int, rank: int) -> np.ndarray:
+        rank = _validate_rank(rank, self.world_size)
         slot = self._slots.get(sequence)
         if slot is None or slot.result is None:
             raise CollectiveError(
                 f"collective sequence {sequence} is incomplete; missing ranks={list(self.missing_ranks(sequence))}. "
                 "The in-process simulator never blocks: submit every rank first, then read Work.result()."
             )
-        return np.array(slot.result, copy=True)
+        result = np.array(slot.result, copy=True)
+        slot.readers.add(rank)
+        if len(slot.readers) == self.world_size:
+            # Every rank-local Work caches its first result, so the shared world
+            # no longer needs contributions/result payloads for this sequence.
+            del self._slots[sequence]
+        return result
 
 
 class CollectiveWork:
     """Handle for one rank's asynchronous simulated collective submission."""
 
-    def __init__(self, world: _InProcessWorld, sequence: int) -> None:
+    def __init__(self, world: _InProcessWorld, sequence: int, rank: int) -> None:
         self._world = world
         self.sequence = int(sequence)
+        self.rank = int(rank)
+        self._cached_result: np.ndarray | None = None
 
     @property
     def is_completed(self) -> bool:
-        return self._world.is_complete(self.sequence)
+        return self._cached_result is not None or self._world.is_complete(self.sequence)
 
     def result(self) -> np.ndarray:
-        return self._world.result(self.sequence)
+        if self._cached_result is None:
+            self._cached_result = self._world.result(self.sequence, self.rank)
+        return np.array(self._cached_result, copy=True)
 
     def wait(self) -> np.ndarray:
         """Return the result if complete; never block in the sequential simulator."""

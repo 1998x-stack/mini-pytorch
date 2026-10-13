@@ -1,7 +1,6 @@
 """AdamW: Adam with decoupled weight decay."""
 from __future__ import annotations
 
-import math
 import numpy as np
 
 from .optimizer import Optimizer
@@ -44,6 +43,9 @@ class AdamW(Optimizer):
                 m += (1.0 - beta1) * grad
                 v *= beta2
                 v += (1.0 - beta2) * grad * grad
-                step_size = lr * math.sqrt(1.0 - beta2**t) / (1.0 - beta1**t)
-                p.data -= step_size * m / (np.sqrt(v) + eps)
+                bias_correction1 = 1.0 - beta1**t
+                bias_correction2 = 1.0 - beta2**t
+                m_hat = m / bias_correction1
+                v_hat = v / bias_correction2
+                p.data -= lr * m_hat / (np.sqrt(v_hat) + eps)
                 p._mark_dirty()

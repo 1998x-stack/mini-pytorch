@@ -16,16 +16,32 @@ class _CrossEntropy(Function):
     def forward(ctx: Context, logits: np.ndarray, target: np.ndarray, *, reduction: str):
         if logits.ndim != 2:
             raise ValueError("CrossEntropyLoss expects logits with shape (batch, classes)")
-        labels = np.asarray(target).reshape(-1).astype(np.int64)
-        if labels.shape[0] != logits.shape[0]:
+        if logits.shape[1] <= 0:
+            raise ValueError("CrossEntropyLoss requires at least one class")
+
+        raw_labels = np.asarray(target).reshape(-1)
+        if raw_labels.shape[0] != logits.shape[0]:
             raise ValueError("target length must equal logits batch size")
+        if not np.all(np.isfinite(raw_labels)):
+            raise ValueError("target must contain finite integer class indices")
+
+        labels = raw_labels.astype(np.int64)
+        if not np.all(raw_labels == labels):
+            raise ValueError("target must contain integer class indices")
         if np.any(labels < 0) or np.any(labels >= logits.shape[1]):
             raise ValueError("target contains an out-of-range class index")
 
+        # log-softmax via log-sum-exp keeps the forward mathematically aligned
+        # with the standard softmax-cross-entropy gradient, even for extreme
+        # logits. Adding an epsilon inside log(prob + eps) would change the
+        # represented objective while the backward below remained unchanged.
         shifted = logits - logits.max(axis=1, keepdims=True)
         exp_shifted = np.exp(shifted)
-        probs = exp_shifted / exp_shifted.sum(axis=1, keepdims=True)
-        losses = -np.log(probs[np.arange(logits.shape[0]), labels] + 1e-12)
+        normalizer = exp_shifted.sum(axis=1, keepdims=True)
+        probs = exp_shifted / normalizer
+        log_normalizer = np.log(normalizer.reshape(-1))
+        rows = np.arange(logits.shape[0])
+        losses = log_normalizer - shifted[rows, labels]
 
         ctx.save_for_backward(probs, labels)
         ctx.reduction = reduction

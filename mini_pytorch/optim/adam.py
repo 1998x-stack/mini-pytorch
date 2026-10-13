@@ -1,7 +1,6 @@
 """Adam optimizer implemented as an extension of the same Optimizer base."""
 from __future__ import annotations
 
-import math
 import numpy as np
 
 from .optimizer import Optimizer
@@ -46,7 +45,7 @@ class Adam(Optimizer):
                 if p.grad is None:
                     continue
 
-                grad = p.grad
+                grad = np.asarray(p.grad)
                 if weight_decay != 0:
                     grad = grad + weight_decay * p.data
 
@@ -62,12 +61,16 @@ class Adam(Optimizer):
                 v = state["exp_avg_sq"]
 
                 m *= beta1
-                m += (1 - beta1) * grad
+                m += (1.0 - beta1) * grad
                 v *= beta2
-                v += (1 - beta2) * (grad * grad)
+                v += (1.0 - beta2) * (grad * grad)
 
-                bias_correction1 = 1 - beta1 ** t
-                bias_correction2 = 1 - beta2 ** t
-                step_size = lr * math.sqrt(bias_correction2) / bias_correction1
-                p.data -= step_size * m / (np.sqrt(v) + eps)
+                # Keep epsilon in the denominator of the bias-corrected second
+                # moment. Moving sqrt(bias_correction2) into step_size without
+                # scaling epsilon changes the Adam algorithm for finite eps.
+                bias_correction1 = 1.0 - beta1**t
+                bias_correction2 = 1.0 - beta2**t
+                m_hat = m / bias_correction1
+                v_hat = v / bias_correction2
+                p.data -= lr * m_hat / (np.sqrt(v_hat) + eps)
                 p._mark_dirty()
