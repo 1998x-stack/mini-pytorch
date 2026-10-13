@@ -13,11 +13,12 @@ import uuid
 
 import numpy as np
 
+from .._version import __version__
 from .rng import get_rng_state, set_rng_state
 from .state import CHECKPOINT_SCHEMA_VERSION, CheckpointState, TrainingState
 
 
-FRAMEWORK_VERSION = "0.9.0"
+FRAMEWORK_VERSION = __version__
 _METADATA_FILE = "metadata.json"
 _TENSORS_FILE = "tensors.npz"
 _FORMAT_NAME = "mini-pytorch-checkpoint"

@@ -1,4 +1,4 @@
-"""Educational graph/compiler-facing APIs through mini-pytorch v0.15."""
+"""Educational graph/compiler-facing APIs for the integrated mini-pytorch v1.0 stack."""
 from .ir import Graph, Node, TensorConstant, Value, ValueRef
 from .capture import CapturedGraph, GraphBreakError, capture, is_capturing
 from .interpreter import GraphInterpreter

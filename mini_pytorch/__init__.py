@@ -1,4 +1,5 @@
 """mini-pytorch: a small, readable PyTorch-like learning framework."""
+from ._version import __version__
 from .autograd import Context, Function, GradFn, RemovableHandle, no_grad
 from .autograd_engine import AutogradEngine, engine
 from .device import Device
@@ -81,5 +82,5 @@ __all__ = [
     "restore_checkpoint_state",
     "save_checkpoint",
     "load_checkpoint",
+    "__version__",
 ]
-__version__ = "0.15.0"
