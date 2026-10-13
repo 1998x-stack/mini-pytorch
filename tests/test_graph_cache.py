@@ -131,6 +131,36 @@ class TestCompiledFunction(unittest.TestCase):
         np.testing.assert_allclose(cx.grad, ex.grad)
         np.testing.assert_allclose(cy.grad, ey.grad)
 
+    def test_multi_input_specialization_returns_to_original_entry(self):
+        compiled = compile_graph(lambda x, y: ((x * y) + x).sum())
+
+        compiled(Tensor(np.ones((2, 3))), Tensor(np.ones((2, 3))))  # compile 0
+        compiled(Tensor(np.full((2, 3), 2.0)), Tensor(np.full((2, 3), 3.0)))  # hit 0
+        compiled(Tensor(np.ones((4, 3))), Tensor(np.ones((4, 3))))  # compile 1
+        compiled(Tensor(np.full((2, 3), 4.0)), Tensor(np.full((2, 3), 5.0)))  # hit 0
+
+        stats = compiled.stats()
+        self.assertEqual(stats.compile_count, 2)
+        self.assertEqual(stats.hit_count, 2)
+        self.assertEqual(stats.miss_count, 2)
+        self.assertEqual([entry.hit_count for entry in compiled.cache.entries], [2, 0])
+
+    def test_cpu_and_edu_same_shape_use_distinct_entries_then_cpu_hits_again(self):
+        compiled = compile_graph(lambda x: (x * x).sum())
+
+        compiled(Tensor([1.0, 2.0], device="cpu"))  # compile 0
+        compiled(Tensor([1.0, 2.0], device="edu"))  # compile 1
+        out = compiled(Tensor([3.0, 4.0], device="cpu"))  # hit 0
+
+        self.assertEqual(str(out.device), "cpu")
+        self.assertEqual(float(out.data), 25.0)
+        stats = compiled.stats()
+        self.assertEqual(stats.compile_count, 2)
+        self.assertEqual(stats.hit_count, 1)
+        self.assertEqual(stats.miss_count, 2)
+        self.assertEqual([entry.signature.tensors[0].device for entry in compiled.cache.entries], ["cpu", "edu"])
+        self.assertEqual([entry.hit_count for entry in compiled.cache.entries], [1, 0])
+
     def test_explain_is_non_mutating_and_reports_failure_reason(self):
         compiled = compile_graph(lambda x: (x + x).sum())
         compiled(Tensor(np.ones((2, 3))))
