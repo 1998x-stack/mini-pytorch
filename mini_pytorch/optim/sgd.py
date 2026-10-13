@@ -50,6 +50,10 @@ class SGD(Optimizer):
         if group["nesterov"] and (group["momentum"] <= 0 or group["dampening"] != 0):
             raise ValueError("Nesterov requires momentum > 0 and dampening == 0")
 
+    def _validate_param_state(self, parameter, values, *, group, index) -> None:
+        expected = {"momentum_buffer"} if group["momentum"] != 0 else set()
+        self._require_state_keys(values, expected, index=index)
+
     def step(self) -> None:
         for group in self.param_groups:
             lr = group["lr"]
