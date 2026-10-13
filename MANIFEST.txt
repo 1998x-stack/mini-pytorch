@@ -7,6 +7,7 @@ README.md
 version.md
 pyproject.toml
 docs/ARCHITECTURE.md
+docs/AOT_AUTOGRAD.md
 docs/AUTOGRAD_ENGINE.md
 docs/CNN_OPERATORS.md
 docs/DEVICE_BACKEND.md
@@ -36,7 +37,9 @@ examples/12_checkpoint_resume.py
 examples/13_ddp_simulation.py
 examples/14_graph_capture.py
 examples/15_graph_cache.py
+examples/16_aot_autograd.py
 mini_pytorch/__init__.py
+mini_pytorch/aot_kernels.py
 mini_pytorch/autograd.py
 mini_pytorch/autograd_engine.py
 mini_pytorch/backend.py
@@ -52,6 +55,7 @@ mini_pytorch/storage.py
 mini_pytorch/tensor.py
 mini_pytorch/utils.py
 mini_pytorch/compiler/__init__.py
+mini_pytorch/compiler/aot.py
 mini_pytorch/compiler/cache.py
 mini_pytorch/compiler/capture.py
 mini_pytorch/compiler/compiled.py
@@ -92,6 +96,7 @@ mini_pytorch/runtime/__init__.py
 mini_pytorch/runtime/checkpoint.py
 mini_pytorch/runtime/rng.py
 mini_pytorch/runtime/state.py
+tests/test_aot_autograd.py
 tests/test_autograd.py
 tests/test_autograd_engine.py
 tests/test_classification.py
