@@ -18,8 +18,9 @@ class Optimizer:
 
     Subclasses generally only need to:
       1. validate group hyperparameters in ``_validate_param_group()``,
-      2. call ``super().__init__(params, defaults=...)``, and
-      3. implement ``step()``.
+      2. validate checkpoint state schema in ``_validate_param_state()``,
+      3. call ``super().__init__(params, defaults=...)``, and
+      4. implement ``step()``.
 
     NumPy arrays stored in per-parameter ``state`` are parameter-shaped in this
     educational framework. Scalar metadata such as step counters should use
@@ -49,6 +50,43 @@ class Optimizer:
         group overrides, later ``add_param_group`` calls, and checkpoint restore
         all share the same mathematical configuration contract.
         """
+
+    def _validate_param_state(
+        self,
+        parameter: Parameter,
+        values: Dict[str, Any],
+        *,
+        group: Dict[str, Any],
+        index: int,
+    ) -> None:
+        """Validate one copied per-parameter checkpoint state dictionary."""
+
+    @staticmethod
+    def _require_state_keys(
+        values: Dict[str, Any],
+        expected: set[str],
+        *,
+        index: int,
+    ) -> None:
+        actual = set(values)
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        if missing or unexpected:
+            raise ValueError(
+                f"optimizer state for parameter index {index} has invalid keys; "
+                f"missing={missing}, unexpected={unexpected}"
+            )
+
+    @staticmethod
+    def _validate_step_value(value: Any, *, index: int) -> None:
+        if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+            raise TypeError(
+                f"optimizer step for parameter index {index} must be an integer"
+            )
+        if int(value) < 0:
+            raise ValueError(
+                f"optimizer step for parameter index {index} must be non-negative"
+            )
 
     def add_param_group(self, group: Dict[str, Any]) -> None:
         if "params" not in group:
@@ -130,11 +168,12 @@ class Optimizer:
             return parsed
         raise TypeError(f"{where} parameter index must be an integer")
 
-    @staticmethod
     def _copy_and_validate_param_state(
+        self,
         parameter: Parameter,
         values: Dict[str, Any],
         *,
+        group: Dict[str, Any],
         index: int,
     ) -> Dict[str, Any]:
         if not isinstance(values, dict):
@@ -151,6 +190,13 @@ class Optimizer:
                 copied[key] = value.copy()
             else:
                 copied[key] = deepcopy(value)
+
+        self._validate_param_state(
+            parameter,
+            copied,
+            group=group,
+            index=index,
+        )
         return copied
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
@@ -178,6 +224,8 @@ class Optimizer:
         current_flat: List[Parameter] = []
         saved_indices: List[int] = []
         pending_group_options: List[Dict[str, Any]] = []
+        pending_group_candidates: List[Dict[str, Any]] = []
+        group_indices_per_group: List[List[int]] = []
 
         for group_number, (current_group, saved_group) in enumerate(
             zip(self.param_groups, saved_groups)
@@ -186,6 +234,13 @@ class Optimizer:
                 raise TypeError(f"loaded parameter group {group_number} must be a dict")
             if "params" not in saved_group:
                 raise KeyError(f"loaded parameter group {group_number} is missing 'params'")
+
+            missing_options = sorted(set(self.defaults) - set(saved_group))
+            if missing_options:
+                raise KeyError(
+                    f"loaded parameter group {group_number} is missing optimizer options "
+                    f"{missing_options}"
+                )
 
             current_params = current_group["params"]
             raw_indices = list(saved_group["params"])
@@ -208,11 +263,23 @@ class Optimizer:
             current_flat.extend(current_params)
             saved_indices.extend(group_indices)
             pending_group_options.append(options)
+            pending_group_candidates.append(candidate)
+            group_indices_per_group.append(group_indices)
 
         if len(set(saved_indices)) != len(saved_indices):
             raise ValueError("loaded optimizer state contains duplicate parameter indices")
 
-        index_to_param = {idx: param for idx, param in zip(saved_indices, current_flat)}
+        index_to_param: Dict[int, Parameter] = {}
+        index_to_group: Dict[int, Dict[str, Any]] = {}
+        for current_group, candidate, group_indices in zip(
+            self.param_groups,
+            pending_group_candidates,
+            group_indices_per_group,
+        ):
+            for idx, param in zip(group_indices, current_group["params"]):
+                index_to_param[idx] = param
+                index_to_group[idx] = candidate
+
         pending_state: Dict[int, Dict[str, Any]] = {}
         seen_state_indices: set[int] = set()
 
@@ -231,6 +298,7 @@ class Optimizer:
             pending_state[id(param)] = self._copy_and_validate_param_state(
                 param,
                 values,
+                group=index_to_group[idx],
                 index=idx,
             )
 
