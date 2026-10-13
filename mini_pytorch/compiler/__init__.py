@@ -60,6 +60,20 @@ from .runtime_analysis import (
     instruction_referenced_value_ids,
 )
 from .profiler import ExecutionEvent, ExecutionProfile, ProfiledResult, profile_lowered
+from .execution_plan import (
+    BufferInterval,
+    BufferSlot,
+    BufferSpec,
+    ExecutionPlan,
+    ExecutionPlanningError,
+    ExecutionStep,
+    MemoryPlan,
+    PlannedExecutionStats,
+    PlannedExecutor,
+    PlannedResult,
+    build_execution_plan,
+    plan_memory,
+)
 
 __all__ = [
     "Graph",
@@ -132,4 +146,16 @@ __all__ = [
     "ExecutionProfile",
     "ProfiledResult",
     "profile_lowered",
+    "ExecutionPlanningError",
+    "BufferSpec",
+    "BufferInterval",
+    "BufferSlot",
+    "MemoryPlan",
+    "ExecutionStep",
+    "ExecutionPlan",
+    "PlannedExecutionStats",
+    "PlannedResult",
+    "plan_memory",
+    "build_execution_plan",
+    "PlannedExecutor",
 ]
