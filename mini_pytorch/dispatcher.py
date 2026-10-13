@@ -1,7 +1,9 @@
 """Educational operator dispatcher for mini-pytorch.
 
 v0.7 adds device-aware backend routing while keeping Autograd/NoGrad as policy
-keys above concrete backend keys.
+keys above concrete backend keys. v0.11 adds a deliberately tiny observation
+point at the outer ``dispatch`` boundary so eager execution can be captured as
+Graph IR without teaching kernels or redispatch about the compiler layer.
 """
 from __future__ import annotations
 
@@ -219,8 +221,23 @@ class Dispatcher:
         return self._decision(operator, self.keyset_for(*args, **kwargs))
 
     def dispatch(self, operator: str, *args, **kwargs):
+        """Execute one logical operator and expose one capture observation point.
+
+        Autograd/fallback kernels may internally call ``redispatch``. Those
+        internal calls intentionally bypass the observer so one logical eager
+        operation maps to one IR Node.
+        """
+
         keyset = self.keyset_for(*args, **kwargs)
-        return self.redispatch(operator, keyset, *args, **kwargs)
+        result = self.redispatch(operator, keyset, *args, **kwargs)
+
+        # Lazy import avoids a core Dispatcher -> compiler import cycle during
+        # package initialization. When no capture is active this call is a very
+        # small no-op.
+        from .compiler.capture import _record_dispatch_if_active
+
+        _record_dispatch_if_active(operator, args, kwargs, result)
+        return result
 
     def redispatch(self, operator: str, keyset: DispatchKeySet, *args, **kwargs):
         decision = self._decision(operator, keyset)
