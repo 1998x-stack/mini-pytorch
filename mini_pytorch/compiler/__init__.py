@@ -1,4 +1,4 @@
-"""Educational graph/compiler-facing APIs through mini-pytorch v0.13."""
+"""Educational graph/compiler-facing APIs through mini-pytorch v0.14."""
 from .ir import Graph, Node, TensorConstant, Value, ValueRef
 from .capture import CapturedGraph, GraphBreakError, capture, is_capturing
 from .interpreter import GraphInterpreter
@@ -29,6 +29,24 @@ from .aot import (
     DifferentiationSpec,
     aot_compile,
     differentiate_graph,
+)
+from .analysis import GraphAnalysis, ValueAnalysis, analyze_graph, iter_value_ids
+from .lowering import (
+    ConstantFoldResult,
+    ExternalOp,
+    FusionGroup,
+    GraphTransform,
+    LoweredExecutor,
+    LoweredProgram,
+    LoweringError,
+    LoweringResult,
+    LoweringStats,
+    PointwiseFusion,
+    eliminate_dead_code,
+    fold_constants,
+    lower_graph,
+    normalize_graph,
+    plan_fusions,
 )
 
 __all__ = [
@@ -68,4 +86,23 @@ __all__ = [
     "AOTProgram",
     "differentiate_graph",
     "aot_compile",
+    "ValueAnalysis",
+    "GraphAnalysis",
+    "iter_value_ids",
+    "analyze_graph",
+    "LoweringError",
+    "GraphTransform",
+    "ConstantFoldResult",
+    "FusionGroup",
+    "ExternalOp",
+    "PointwiseFusion",
+    "LoweredProgram",
+    "LoweringStats",
+    "LoweringResult",
+    "normalize_graph",
+    "eliminate_dead_code",
+    "fold_constants",
+    "plan_fusions",
+    "lower_graph",
+    "LoweredExecutor",
 ]
