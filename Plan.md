@@ -2,11 +2,9 @@
 
 > Canonical roadmap for `main`.
 >
-> **Invariant:** `main` is always the newest integrated, validated state. Version branches are readable learning snapshots.
+> **Invariant:** `main` is always the newest integrated, validated framework state. Each version branch is a readable historical learning snapshot.
 
-## 1. Project purpose
-
-mini-pytorch removes one layer of PyTorch “magic” at a time with readable Python/NumPy implementations.
+## 1. Project dependency chain
 
 ```text
 Tensor / Dynamic Autograd
@@ -17,23 +15,19 @@ Data pipeline
       ↓
 Tensor memory model
       ↓
-Operator Dispatcher
-      ↓
-NN operator stack
-      ↓
-Device / Backend
+Dispatcher / Backend
       ↓
 Advanced Autograd Engine
       ↓
-Training Runtime / Reproducibility
+Training Runtime
       ↓
-Distributed / DDP Concepts
+Distributed / DDP
       ↓
-Graph IR / Eager Capture
+Graph IR
       ↓
-Guards / Graph Cache / Recompile
+Guards / Graph Cache
       ↓
-AOTAutograd-like graph differentiation
+AOT-style Graph Differentiation
       ↓
 Lowering / Fusion
       ↓
@@ -42,503 +36,480 @@ Runtime / Performance
 Integrated architecture
 ```
 
+One version introduces one dominant mental model.
+
 ---
 
 # 2. Completed milestones
 
-## v0.1 — Eager Tensor + Dynamic Autograd ✅
-Dynamic reverse-mode autodiff, Module/Parameter, Linear, SGD/Adam, gradcheck.
+| Version | Theme | Key validated mechanism | Tests |
+|---|---|---|---:|
+| v0.1 | Dynamic Autograd | Tensor → Function → backward | historical |
+| v0.2 | Optimizer/Scheduler | groups/state/LR scheduling | historical |
+| v0.3 | Data pipeline | Dataset/Sampler/DataLoader | historical |
+| v0.4 | Tensor memory | Storage/stride/views/version | historical |
+| v0.5 | Dispatcher | schema/keys/redispatch | 80 |
+| v0.6 | CNN ops | Conv/Pool/BN/Dropout | 90 |
+| v0.7 | Device/Backend | CPU + EDU placement | 103 |
+| v0.8 | Autograd Engine | lifetime/hooks/retain_graph | 123 |
+| v0.9 | Training Runtime | deterministic checkpoint resume | 140 |
+| v0.10 | DDP | reducer/buckets/all-reduce equivalence | 159 |
+| v0.11 | Graph IR | eager capture/replay | 176 |
+| v0.12 | Guards/Cache | specialization/recompile | 192 |
+| v0.13 | AOTAutograd-like | explicit backward Graph | **206** |
 
-## v0.2 — Optimizer State + LR Scheduler ✅
-Optimizer families, parameter groups/state, AdamW/RMSprop/Adagrad/Adamax, LR schedulers.
-
-## v0.3 — Dataset / Sampler / DataLoader + MNIST ✅
-Dataset/Sampler/BatchSampler/DataLoader separation, MNIST, CrossEntropy, MLP training.
-
-## v0.4 — Tensor Memory Model ✅
-Storage, shape/stride/offset, views, contiguous, inplace mutation, VersionCounter.
-
-## v0.5 — Operator Registry + Dispatcher ✅
-Schema/kernel registry, DispatchKeySet, Autograd/NoGrad/backend routing, redispatch.
-
-Validated baseline: **80 tests**.
-
-## v0.6 — CNN Operator Stack ✅
-Conv2d reference/im2col/backward, MaxPool2d, Dropout, BatchNorm, CNN MNIST.
-
-Validated baseline: **90 tests**.
-
-## v0.7 — Device / Backend ✅
-Device, backend registry, CPU/EDU, Tensor.to, device-aware dispatch, Module.to.
-
-Validated baseline: **103 tests**.
-
-## v0.8 — Advanced Autograd Engine ✅
-Graph lifetime, retain_graph, retain_grad, hooks, custom Function lifecycle.
-
-Validated baseline: **123 tests**.
-
-## v0.9 — Training Runtime / Checkpoint / RNG ✅
-TrainingState, framework RNG, JSON+NPZ checkpoint, deterministic resume proof.
-
-Validated baseline: **140 tests**.
-
-## v0.10 — Distributed / DDP Concepts ✅
-DistributedSampler, ProcessGroup, all-reduce, DDP Reducer/buckets, global-batch equivalence.
-
-Validated baseline: **159 tests**.
-
-## v0.11 — Graph IR / Eager-to-Graph Capture ✅
+## v0.13 completed architecture
 
 ```text
-Python eager
-   ↓
-Dispatcher observer
-   ↓
-Value / Node / Graph
-   ↓
-GraphInterpreter
-   ↓
-Dispatcher replay
+forward Graph
+      ↓
+differentiate_graph
+      ↓
+DifferentiationSpec
+      ↓
+explicit saved forward Values
+      ↓
+backward Graph
+      ↓
+GraphInterpreter / Dispatcher
+      ↓
+input gradients
 ```
 
-Implemented stable textual IR, constants, GraphBreak, CPU/EDU replay, forward/backward equivalence.
-
-Validated baseline: **176 tests**.
-
-## v0.12 — Guards / Graph Cache / Recompile ✅
+Validated VJP set:
 
 ```text
-runtime call
-    ↓
-InputSignature
-    ↓
-GuardSet
-    ↓
-GraphCache
- ┌──────┴──────┐
- ▼             ▼
-hit           miss
- │              │
-replay        capture
+add
+mul
+matmul (2-D)
+relu
+sum
 ```
 
-Implemented:
+Validated properties:
 
-- TensorSignature / InputSignature;
-- exact shape/dtype/device/requires-grad specialization;
-- grad-mode specialization;
-- inspectable GuardResult/GuardSet;
-- multi-entry GraphCache;
-- CompiledFunction / compile_graph;
-- compile/recompile/hit/miss/GraphBreak stats;
-- non-mutating explain();
-- CPU/EDU specialization;
-- multi-input specialization;
-- eager-vs-compiled forward/backward equivalence;
-- explicit closure Tensor capture-by-value policy.
-
-Validated baseline: **192 tests**.
-
-Primary learning question:
-
-> When is a captured Graph still valid for a new runtime call, and how can multiple valid specializations coexist?
+- eager vs AOT forward equality;
+- eager AutogradEngine vs backward-Graph gradient equality;
+- broadcasting reduction;
+- reduction axis/keepdims;
+- shared-gradient accumulation;
+- explicit non-scalar grad seeds;
+- CPU/EDU placement;
+- unsupported-op error boundary;
+- explicit first-order/no-higher-order boundary.
 
 ---
 
-# 3. Current next milestone — v0.13 AOTAutograd-like Graph Differentiation 🎯
+# 3. Current next milestone — v0.14 Lowering / Fusion / Inductor-like Concepts 🎯
 
-## 3.1 Why AOTAutograd comes now
+## 3.1 Why lowering follows AOT graphs
 
-The project now has:
-
-```text
-logical forward Graph          v0.11
-      +
-validity/cache semantics       v0.12
-```
-
-But differentiation is still executed by the eager AutogradEngine:
+The project now has explicit programs for both directions:
 
 ```text
-GraphInterpreter forward
-      ↓
-Tensor / GradFn graph
-      ↓
-AutogradEngine.backward()
-      ↓
-Python/NumPy VJP formulas
+forward Graph
+backward Graph
 ```
 
-The next question is:
+They are inspectable and executable, but still resemble the high-level logical operator stream captured from eager execution.
 
-> Can reverse-mode differentiation itself become an explicit graph program?
+The next compiler question is:
 
-This is the conceptual bridge toward AOTAutograd-like systems.
+> Can we transform a correct high-level Graph into a simpler/lower-level execution plan without changing its semantics?
+
+This is the conceptual role of lowering/optimization/fusion systems such as TorchInductor, without claiming production parity.
 
 ## 3.2 Target architecture
 
 ```text
-                 forward Graph
-                      │
-                      ▼
-              differentiate_graph
-                      │
-          ┌───────────┴───────────┐
-          ▼                       ▼
-   forward execution        backward Graph
-          │                       │
-          ├── saved values ───────┤
-          │                       │
-          ▼                       ▼
-     user outputs          grad-output inputs
-                                  │
-                                  ▼
-                          GraphInterpreter
-                                  │
-                                  ▼
-                           input gradients
+              Graph
+                │
+                ▼
+          GraphAnalysis
+        use-count / liveness
+                │
+                ▼
+          normalized Graph
+                │
+       ┌────────┼────────┐
+       ▼        ▼        ▼
+      DCE   const fold  fusion analysis
+       └────────┼────────┘
+                ▼
+          LoweredProgram
+                │
+                ▼
+          LoweredExecutor
+                │
+                ▼
+              Tensor
 ```
 
-The eager AutogradEngine remains the reference oracle.
+The original GraphInterpreter remains a reference executor.
 
 ---
 
-## 3.3 v0.13.1 — Differentiation metadata
+## 3.3 v0.14.1 — Graph clone + normalization boundary
 
-Introduce explicit metadata describing differentiation roles:
+Introduce an explicit transform entry point that does not accidentally mutate the source Graph:
 
-```text
-DifferentiationSpec
-├── forward input ids requiring grad
-├── forward output ids to differentiate
-├── saved value ids required by backward
-└── gradient output/input ordering
+```python
+normalized = normalize_graph(graph)
 ```
 
-The ordering must be deterministic and inspectable.
+Requirements:
+
+- deterministic Value/Node remapping;
+- preserve input/output ordering;
+- preserve constant payloads and metadata;
+- validate before and after;
+- stable textual representation.
 
 Tests:
 
-- scalar output;
-- one/multiple grad-requiring inputs;
-- non-grad input exclusion;
-- deterministic ordering.
+- source Graph unchanged;
+- cloned program executes equivalently;
+- deterministic formatting.
 
 ---
 
-## 3.4 v0.13.2 — Backward graph IR boundary
+## 3.4 v0.14.2 — Use-count and liveness analysis
 
-Reuse the existing `Graph` representation rather than inventing an unrelated compiler IR.
-
-Backward graph inputs should explicitly represent:
+Build inspectable analysis:
 
 ```text
-saved forward values
-+
-grad outputs
+Value id
+├── producer
+├── users
+├── use_count
+└── is_graph_output
 ```
-
-Backward graph outputs should represent:
-
-```text
-gradients for selected forward inputs
-```
-
-This makes the forward/backward ABI visible.
-
----
-
-## 3.5 v0.13.3 — Tensor-producing VJP formulas
-
-Current eager backward formulas largely operate on NumPy arrays.
-
-A graph-producing differentiation system needs formulas expressible as logical Tensor operations.
-
-Begin with a small op set:
-
-```text
-aten::add.Tensor
-aten::mul.Tensor
-aten::matmul.default
-aten::relu.default
-aten::sum.default
-```
-
-Create an educational VJP registry:
-
-```text
-operator
-   ↓
-Graph VJP rule
-```
-
-Do not put AOT rules into backend kernels.
-
----
-
-## 3.6 v0.13.4 — Reverse graph construction
-
-Process forward nodes in reverse topological order.
-
-Conceptually:
-
-```text
-forward:
-%z = mul(%x, %y)
-%o = sum(%z)
-
-backward seed:
-d%o
-
-reverse:
-d%z = expand_like(d%o, %z)
-d%x = mul(d%z, %y)
-d%y = mul(d%z, %x)
-```
-
-Gradient contributions to shared values must accumulate explicitly in the backward Graph.
-
----
-
-## 3.7 v0.13.5 — Saved forward values
-
-Backward formulas may need original forward values.
-
-Examples:
-
-```text
-mul backward needs x and y
-matmul backward needs operands
-relu backward needs activation mask/input
-```
-
-Determine which forward Values must cross the forward/backward boundary.
-
-Expose them explicitly instead of hiding them in Python `Context`.
-
-Possible result:
-
-```text
-AOTProgram
-├── forward_graph
-├── backward_graph
-├── user_output_ids
-├── saved_value_ids
-└── grad_input_ids
-```
-
----
-
-## 3.8 v0.13.6 — Forward executor with saved outputs
-
-AOT forward execution should return:
-
-```text
-user outputs
-+
-saved forward values
-```
-
-without exposing saved values as user-facing outputs.
-
-A small executor wrapper may bind requested internal Value ids while replaying the forward graph.
-
-Do not duplicate backend kernels.
-
----
-
-## 3.9 v0.13.7 — Backward executor
 
 Possible API:
 
 ```python
-program = differentiate_graph(graph)
-run = AOTInterpreter(program)
-
-outputs, ctx = run.forward(*inputs)
-grads = run.backward(ctx, *grad_outputs)
+analysis = analyze_graph(graph)
 ```
 
-The backward path should execute through existing logical operators/Dispatcher where possible.
+This becomes the dependency for DCE and safe fusion grouping.
+
+Tests:
+
+- branched graph;
+- shared Value;
+- constants;
+- graph outputs always live.
 
 ---
 
-## 3.10 v0.13.8 — Eager reference equivalence
+## 3.5 v0.14.3 — Dead-value / dead-node elimination
 
-Central correctness experiment:
+Captured eager code may compute a Tensor that is never returned or consumed by live output dataflow.
 
-```text
-same function
-same inputs
-
-Path A:
-eager forward
-→ AutogradEngine.backward
-→ eager grads
-
-Path B:
-forward Graph
-→ AOT forward saved values
-→ backward Graph
-→ AOT grads
-```
-
-Require:
+Implement:
 
 ```text
-outputs_A == outputs_B
-grads_A   == grads_B
+outputs
+  ↓ reverse reachability
+live Values / Nodes
+  ↓
+new Graph
 ```
 
-Test CPU and EDU for the supported op subset.
+Rules:
 
----
+- only remove operations currently modeled as pure;
+- never remove graph inputs/outputs incorrectly;
+- preserve deterministic ids in rebuilt graph;
+- do not claim general side-effect analysis.
 
-## 3.11 v0.13.9 — Shared-subgraph gradient accumulation
-
-Use a graph like:
+Core test:
 
 ```python
-shared = x * x
-out = (shared + shared).sum()
+def fn(x):
+    dead = x * x
+    live = x + x
+    return live
 ```
 
-Backward Graph must accumulate the two contributions before propagating through `mul`.
-
-This is the graph-level counterpart of the eager AutogradEngine shared-node test.
+Lowered/optimized graph should omit the dead multiply while remaining numerically identical.
 
 ---
 
-## 3.12 v0.13.10 — Failure semantics
+## 3.6 v0.14.4 — Safe constant folding
 
-Fail clearly for:
+Fold only operations whose complete inputs are captured constants and whose semantics are pure/stable.
 
-- unsupported operator VJP;
-- non-scalar output without supplied grad output;
-- malformed saved-value bindings;
-- unsupported output structure;
-- incompatible grad-output shape/device.
-
-Do not silently fall back inside a partially built backward Graph.
-
----
-
-## 3.13 Higher-order gradient boundary
-
-Do **not** claim general higher-order gradients merely because backward is represented as a Graph.
-
-Higher-order support requires:
+Initial candidate set:
 
 ```text
-backward Graph execution
-      ↓
-produces differentiable Tensor graph
-      ↓
-that graph itself satisfies differentiation rules
+add
+mul
+relu
 ```
 
-Treat that as a later explicit milestone unless fully validated.
+Possible process:
+
+```text
+constant inputs
+      ↓
+reference execution
+      ↓
+new TensorConstant
+      ↓
+remove folded node
+```
+
+Do not fold device- or runtime-sensitive behavior without an explicit policy.
+
+Tests:
+
+- full constant expression;
+- constant feeding live runtime op;
+- no fold when runtime Value is involved;
+- CPU/EDU policy documented.
 
 ---
 
-## 3.14 v0.13 tests
+## 3.7 v0.14.5 — Fusion eligibility analysis
+
+Start with deliberately narrow pointwise fusion:
+
+```text
+aten::add.Tensor
+aten::mul.Tensor
+aten::relu.default
+```
+
+Treat as initial barriers:
+
+```text
+matmul
+sum
+conv/pool
+AOT helper reductions/transposes
+```
+
+A fusion group should be explicit data:
+
+```text
+FusionGroup
+├── input Value ids
+├── ordered Node ids
+├── output Value ids
+└── reason/eligibility metadata
+```
+
+Do not merely label adjacent nodes; respect actual dependency/use-count structure.
+
+---
+
+## 3.8 v0.14.6 — Lowered pointwise representation
+
+Introduce a small representation below high-level Graph nodes, e.g.:
+
+```text
+LoweredProgram
+├── ExternalOp
+└── PointwiseFusion
+```
+
+A `PointwiseFusion` may contain an expression DAG such as:
+
+```text
+out = relu((x * y) + x)
+```
+
+rather than three independent Dispatcher calls.
+
+The representation must remain inspectable and deterministic.
+
+---
+
+## 3.9 v0.14.7 — Reference LoweredExecutor
+
+Implement a readable executor for `LoweredProgram`.
+
+Initial educational behavior may use NumPy for a fused pointwise group, but architecture must keep clear separation:
+
+```text
+Graph transformation policy
+      ≠
+numerical execution mechanism
+```
+
+The executor should preserve device identity for CPU/EDU according to an explicit policy.
+
+No generated C++/CUDA/Triton is required.
+
+---
+
+## 3.10 v0.14.8 — Forward and backward graph lowering
+
+The same lowering pipeline should accept either:
+
+```text
+AOTProgram.forward_graph
+```
+
+or:
+
+```text
+AOTProgram.backward_graph
+```
+
+This is important: v0.13 exists so backward is now just another explicit program that compiler passes can inspect.
+
+Core integration proof:
+
+```text
+eager reference
+      ==
+GraphInterpreter(forward/backward)
+      ==
+LoweredExecutor(lowered forward/backward)
+```
+
+for the supported subset.
+
+---
+
+## 3.11 v0.14.9 — Pass pipeline and explainability
+
+Expose something like:
+
+```python
+result = lower_graph(graph)
+print(result.stats())
+print(result.explain())
+```
+
+Suggested metrics:
+
+```text
+original_nodes
+live_nodes_after_dce
+constants_folded
+fusion_groups
+fused_nodes
+external_nodes
+lowered_instructions
+```
+
+Important:
+
+```text
+fewer nodes
+≠ automatically faster
+```
+
+Performance measurement belongs mainly to v0.15.
+
+---
+
+## 3.12 v0.14.10 — Failure semantics
+
+Explicit errors for:
+
+- malformed Graph;
+- unsupported lowerable expression;
+- invalid fusion group;
+- missing Value dependency;
+- dtype/device inconsistency;
+- executor input-count mismatch.
+
+Unsupported nodes should remain `ExternalOp` when safe, rather than being silently rewritten incorrectly.
+
+---
+
+## 3.13 v0.14 tests
 
 Minimum families:
 
-### Differentiation metadata
-- input/output role selection;
-- deterministic saved-value ordering.
+### Analysis
 
-### VJP rules
-- add;
-- mul;
-- matmul;
-- relu;
-- sum.
+- producer/users/use-count;
+- shared Values;
+- output liveness.
 
-### Integration
-- forward output equality;
-- eager vs AOT input gradients;
-- shared-node accumulation;
-- CPU / EDU;
-- graph cache specialization feeding AOT program as appropriate.
+### Transform
 
-### Failure
-- unsupported op;
-- bad grad seed;
-- missing saved values.
+- clone/normalization;
+- DCE;
+- safe constant folding;
+- source Graph remains unchanged.
 
-Historical **192 tests** must remain green.
+### Fusion
+
+- pointwise chain forms one group;
+- branch/use-count prevents unsafe fusion;
+- reduction/matmul barriers;
+- deterministic grouping.
+
+### Execution
+
+- eager vs GraphInterpreter vs LoweredExecutor output equality;
+- CPU/EDU;
+- AOT forward Graph;
+- AOT backward Graph / input-gradient equality;
+- all historical 206 tests remain green.
 
 ---
 
-## 3.15 v0.13 Definition of Done
+## 3.14 v0.14 Definition of Done
 
-v0.13 is complete when:
+v0.14 is complete when:
 
-- forward/backward graph ABI is explicit;
-- small VJP registry exists;
-- backward Graph is inspectable;
-- saved forward values are explicit;
-- AOT forward/backward executor exists;
-- eager-vs-AOT outputs/grads match;
-- shared-node accumulation works;
-- CPU/EDU tests pass;
-- docs/example/version README updated;
-- exact final branch-head CI green;
-- frozen v0.13 integrated into main.
+- analysis representation is explicit;
+- normalization does not mutate source Graph;
+- DCE works for pure dead nodes;
+- safe constant folding works for documented subset;
+- pointwise fusion groups are explicit/deterministic;
+- a LoweredProgram exists;
+- a reference LoweredExecutor exists;
+- forward and AOT backward graphs both lower correctly;
+- reference equivalence passes;
+- stats/explain surface exists;
+- docs/example/README/version/Agents/manifest updated;
+- exact final branch-head CI is green;
+- frozen v0.14 is integrated into main.
 
 ---
 
 # 4. Future milestones
 
-## v0.14 — Lowering / Fusion / Inductor-like Concepts
-
-```text
-Graph IR
-  ↓
-normalization
-  ↓
-pattern/fusion analysis
-  ↓
-lowered loop/tensor IR
-  ↓
-reference executor
-```
-
-Potential transformations:
-
-- pointwise fusion;
-- dead-value elimination;
-- safe constant folding;
-- simple matmul/pointwise lowering;
-- tiny generated Python/NumPy kernel representation.
-
-No production Triton claim.
-
 ## v0.15 — Runtime / Performance Mechanics
 
-Potential topics:
+Central question:
 
-- execution planning;
-- graph memory lifetime;
-- preallocation/reuse;
-- allocator/pool concepts;
-- asynchronous work abstraction;
-- profiling;
-- eager vs interpreted vs fused timing.
+> Once optimized/lowered programs exist, what runtime mechanisms actually determine execution cost?
+
+Planned areas:
+
+```text
+execution timing / profiling
+memory lifetime planning
+buffer reuse / simple pool
+preallocation
+execution plans
+compiled-vs-eager measurements
+fusion benefit/cost cases
+```
+
+Any speed claim must be measured, not inferred from graph node count.
 
 ## v1.0 — Integrated Architecture
+
+The final educational architecture should connect end-to-end:
 
 ```text
 Tensor / Storage
       ↓
 Dispatcher / Backend
       ↓
-Autograd
+AutogradEngine
       ↓
-Module / Optimizer / DataLoader
+Module / Optimizer / Data
       ↓
 Runtime / Checkpoint
       ↓
@@ -548,18 +519,20 @@ Graph Capture
       ↓
 Guards / Cache
       ↓
-AOTAutograd-like
+AOT backward Graph
       ↓
 Lowering / Fusion
+      ↓
+Runtime planning
 ```
 
-v1.0 means the major architectural boundaries can be followed end-to-end in a small readable codebase; it does not mean feature parity with PyTorch.
+v1.0 means the major architectural boundaries can be followed in one small readable codebase—not feature parity with PyTorch.
 
 ---
 
-# 5. Version governance
+# 5. Governance checklist
 
-Every future `vX.Y` must contain:
+Every future version must include:
 
 ```text
 README.md
@@ -570,6 +543,18 @@ relevant example
 tests
 ```
 
-Freeze only after exact version-branch HEAD passes GitHub Actions, then integrate into main and advance the roadmap.
+Freeze sequence:
 
-`main` must never intentionally remain behind a newer validated version branch.
+```text
+exact version-branch HEAD
+      ↓
+full GitHub Actions regression green
+      ↓
+freeze version branch
+      ↓
+fast-forward validated tree into main
+      ↓
+restore canonical main docs
+      ↓
+advance Plan.md
+```
